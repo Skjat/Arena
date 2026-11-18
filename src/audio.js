@@ -278,6 +278,59 @@ export class Sound {
     this.noise({ dur: 0.7, type: 'bandpass', freq: 800, freqEnd: 2500, q: 3, gain: 0.12, attack: 0.4 });
   }
 
+  // ===== Арены =====
+  sizzle() {
+    if (!this.ok('sizzle', 0.12)) return;
+    this.noise({ dur: 0.45, type: 'highpass', freq: 3500, freqEnd: 6000, gain: 0.18, attack: 0.02, curve: 'lin' });
+    for (let i = 0; i < 4; i++) this.noise({ dur: 0.03, type: 'bandpass', freq: 2000 + Math.random() * 3000, q: 4, gain: 0.12, when: Math.random() * 0.3 });
+  }
+
+  trapClick() {
+    if (!this.ok('trapClick', 0.15)) return;
+    for (let i = 0; i < 4; i++) this.tone({ type: 'square', freq: 900, freqEnd: 600, dur: 0.03, gain: 0.05, when: i * 0.12 });
+  }
+
+  spikes() {
+    if (!this.ok('spikes', 0.08)) return;
+    this.noise({ dur: 0.15, type: 'highpass', freq: 2500, gain: 0.5 });
+    [700, 1450, 2300].forEach((f) => this.tone({ type: 'triangle', freq: f, dur: 0.35, gain: 0.08, rev: 0.6 }));
+    this.tone({ type: 'sine', freq: 90, freqEnd: 40, dur: 0.2, gain: 0.4 });
+  }
+
+  growl(pitch = 1) {
+    if (!this.ok('growl', 0.6)) return;
+    const ctx = this.ctx, t0 = this.t;
+    const o = ctx.createOscillator(); o.type = 'sawtooth';
+    o.frequency.setValueAtTime(70 * pitch, t0); o.frequency.linearRampToValueAtTime(55 * pitch, t0 + 0.8);
+    const l = ctx.createOscillator(); l.frequency.value = 23;
+    const lg = ctx.createGain(); lg.gain.value = 0.12;
+    const g = ctx.createGain(); g.gain.setValueAtTime(0.0001, t0); g.gain.linearRampToValueAtTime(0.18, t0 + 0.1); g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.9);
+    const am = ctx.createGain(); am.gain.value = 0.6;
+    l.connect(lg); lg.connect(am.gain);
+    const f = ctx.createBiquadFilter(); f.type = 'lowpass'; f.frequency.value = 600;
+    o.connect(f); f.connect(am); am.connect(g); this.out(g, 0.3);
+    o.start(t0); l.start(t0); o.stop(t0 + 1); l.stop(t0 + 1);
+    this.noise({ dur: 0.8, type: 'bandpass', freq: 300, q: 2, gain: 0.1, attack: 0.1 });
+  }
+
+  roar(pitch = 1) {
+    if (!this.ok('roar', 0.3)) return;
+    this.tone({ type: 'sawtooth', freq: 180 * pitch, freqEnd: 90 * pitch, dur: 0.4, gain: 0.15 });
+    this.noise({ dur: 0.45, type: 'bandpass', freq: 700 * pitch, freqEnd: 300, q: 1.5, gain: 0.4, attack: 0.02, rev: 0.4 });
+  }
+
+  yelp() {
+    if (!this.ok('yelp', 0.3)) return;
+    this.tone({ type: 'triangle', freq: 900, freqEnd: 500, dur: 0.18, gain: 0.15 });
+    this.noise({ dur: 0.15, type: 'bandpass', freq: 1500, q: 3, gain: 0.12 });
+  }
+
+  chain() {
+    if (!this.ok('chain', 0.25)) return;
+    for (let i = 0; i < 5; i++) this.tone({ type: 'triangle', freq: 1800 + Math.random() * 1600, dur: 0.12, gain: 0.05, when: i * 0.03, rev: 0.3 });
+    this.noise({ dur: 0.1, type: 'highpass', freq: 4000, gain: 0.15 });
+  }
+
   // ===== Руны и UI =====
   runeOpen() {
     if (!this.ok('runeOpen')) return;

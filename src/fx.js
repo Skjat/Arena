@@ -86,6 +86,10 @@ class BloodDrops {
         if (Math.random() < 0.4) this.decals.addWall(it.p, 0.08 + it.s * 0.06);
         continue;
       }
+      if (this.world && this.world.walls.length && it.p.y < 2.4) {
+        const n = this.world.wallNormalAt(it.p, 0.02);
+        if (n) { if (Math.random() < 0.4) this.decals.addWall(it.p, 0.08 + it.s * 0.06, n); continue; }
+      }
       out.push(it);
       const sp = it.v.length();
       _q.setFromUnitVectors(_up, _v.copy(it.v).divideScalar(sp || 1));
@@ -143,16 +147,24 @@ class Decals {
     this.mesh.instanceMatrix.needsUpdate = true;
     return i;
   }
-  addWall(p, size) {
+  addWall(p, size, normal = null) {
     const i = this.wnext;
     this.wnext = (this.wnext + 1) % 120;
     this.wused = Math.min(120, this.wused + 1);
-    const ang = Math.atan2(p.x, p.z);
-    _e.set(0, ang + Math.PI, Math.random() * 6);
-    _q.setFromEuler(_e);
-    _s.set(size, size * (1 + Math.random()), 1);
-    const r = 13.47;
-    _p.set(Math.sin(ang) * r, Math.max(0.1, p.y), Math.cos(ang) * r);
+    if (normal) {
+      // произвольная стена: плоскость смотрит по нормали
+      _q.setFromUnitVectors(_v.set(0, 0, 1), _p.set(normal.x, 0, normal.z).normalize());
+      _q.multiply(new THREE.Quaternion().setFromAxisAngle(_v.set(0, 0, 1), Math.random() * 6));
+      _s.set(size, size * (1 + Math.random()), 1);
+      _p.set(p.x + normal.x * 0.02, Math.max(0.1, p.y), p.z + normal.z * 0.02);
+    } else {
+      const ang = Math.atan2(p.x, p.z);
+      _e.set(0, ang + Math.PI, Math.random() * 6);
+      _q.setFromEuler(_e);
+      _s.set(size, size * (1 + Math.random()), 1);
+      const r = 13.47;
+      _p.set(Math.sin(ang) * r, Math.max(0.1, p.y), Math.cos(ang) * r);
+    }
     _m.compose(_p, _q, _s);
     this.wall.setMatrixAt(i, _m);
     this.wall.count = this.wused;

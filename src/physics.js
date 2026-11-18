@@ -4,6 +4,9 @@ import * as THREE from 'three';
 export const GRAVITY = 13.5;
 
 export class Ragdoll {
+  // Внешние препятствия (стены лабиринта): объект с ragdollCollide(q, r) и wallNormalAt(q, r).
+  static world = null;
+
   // positions/velocities: массивы Vector3; radii: массив радиусов; constraints: [{a,b,len,stiff,min}]
   constructor(positions, velocities, radii, constraints, invMass = null) {
     this.n = positions.length;
@@ -65,7 +68,14 @@ export class Ragdoll {
           const d = Math.hypot(p[i].x, p[i].z);
           if (d > R - r[i]) {
             const radial = (v[i].x * p[i].x + v[i].z * p[i].z) / (d || 1);
-            if (radial > 5) events.push({ type: 'wall', speed: radial, i, pos: p[i].clone() });
+            if (radial > 5) events.push({ type: 'wall', speed: radial, i, pos: p[i].clone(), normal: { x: -p[i].x / (d || 1), z: -p[i].z / (d || 1) } });
+          }
+          if (Ragdoll.world) {
+            const n = Ragdoll.world.wallNormalAt(p[i], r[i]);
+            if (n) {
+              const into = -(v[i].x * n.x + v[i].z * n.z);
+              if (into > 5) events.push({ type: 'wall', speed: into, i, pos: p[i].clone(), normal: n });
+            }
           }
         }
       }
@@ -89,6 +99,7 @@ export class Ragdoll {
           const d = Math.hypot(q.x, q.z);
           const lim = R - r[i];
           if (d > lim) { q.x *= lim / d; q.z *= lim / d; }
+          if (Ragdoll.world) Ragdoll.world.ragdollCollide(q, r[i]);
         }
       }
       for (let i = 0; i < this.n; i++) {
@@ -101,6 +112,13 @@ export class Ragdoll {
         const vy = v[i].y;
         v[i].subVectors(q, old[i]).divideScalar(h);
         if (q.y <= r[i] + 0.004 && vy < -3) v[i].y = -vy * this.bounce;
+        if (Ragdoll.world) {
+          const n = Ragdoll.world.wallNormalAt(q, r[i] + 0.01);
+          if (n) {
+            const into = v[i].x * n.x + v[i].z * n.z;
+            if (into < 0) { v[i].x -= n.x * into * 1.3; v[i].z -= n.z * into * 1.3; }
+          }
+        }
         const d = Math.hypot(q.x, q.z);
         if (d >= R - r[i] - 0.002) {
           // отскок от стены

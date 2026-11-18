@@ -46,9 +46,10 @@ export const SEVER = {
 
 const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3();
 const _m = new THREE.Matrix4();
+const _c = new THREE.Color();
 const UP = new THREE.Vector3(0, 1, 0);
 
-function ik2(root, target, l1, l2, pole, outMid, outEnd) {
+export function ik2(root, target, l1, l2, pole, outMid, outEnd) {
   const d = _v1.subVectors(target, root);
   let dist = d.length();
   const maxD = (l1 + l2) * 0.995, minD = Math.abs(l1 - l2) + 0.02;
@@ -64,7 +65,7 @@ function ik2(root, target, l1, l2, pole, outMid, outEnd) {
 }
 
 // Ориентировать группу: +Y вдоль A→B, +Z как можно ближе к zRef. Возвращает новую ось Z.
-function orient(group, A, B, zRef, outZ) {
+export function orient(group, A, B, zRef, outZ) {
   const y = _v1.subVectors(B, A);
   const len = y.length();
   if (len < 1e-6) return;
@@ -130,6 +131,7 @@ export class Character {
     scene.add(this.group);
     this.buildMaterials();
     this.buildMeshes();
+    this.mergeMeshes();
     if (opts.weaponId) this.setWeapon(opts.weaponId);
     this.capsules = [];
     this.flash = 0;
@@ -314,6 +316,51 @@ export class Character {
     }
   }
 
+  // Слить статичные детали каждого сегмента по материалам — меньше draw calls.
+  mergeMeshes() {
+    this.ownGeos = [];
+    for (const name in this.segs) {
+      const sg = this.segs[name];
+      const keep = new Set(sg.caps.map((c) => c.mesh));
+      if (this.handGlow) keep.add(this.handGlow);
+      const byMat = new Map();
+      for (const m of sg.group.children) {
+        if (!m.isMesh || keep.has(m)) continue;
+        if (!byMat.has(m.material)) byMat.set(m.material, []);
+        byMat.get(m.material).push(m);
+      }
+      for (const [mat, list] of byMat) {
+        if (list.length < 2) continue;
+        const parts = [];
+        let total = 0;
+        for (const m of list) {
+          m.updateMatrix();
+          const g = (m.geometry.index ? m.geometry.toNonIndexed() : m.geometry.clone());
+          g.applyMatrix4(m.matrix);
+          parts.push(g);
+          total += g.attributes.position.count;
+        }
+        const pos = new Float32Array(total * 3), nor = new Float32Array(total * 3);
+        let o = 0;
+        for (const g of parts) {
+          pos.set(g.attributes.position.array, o * 3);
+          nor.set(g.attributes.normal.array, o * 3);
+          o += g.attributes.position.count;
+          g.dispose();
+        }
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+        geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+        geo.computeBoundingSphere();
+        const merged = new THREE.Mesh(geo, mat);
+        merged.castShadow = true;
+        for (const m of list) sg.group.remove(m);
+        sg.group.add(merged);
+        this.ownGeos.push(geo);
+      }
+    }
+  }
+
   setWeapon(id) {
     if (this.weapon) { this.weapon.group.removeFromParent(); }
     this.weapon = buildWeapon(id);
@@ -459,12 +506,17 @@ export class Character {
       m.color.copy(this.baseColors[i]);
       m.emissive.setRGB(fl * 0.55, fl * 0.12, fl * 0.08);
       if (t === 'frozen') {
-        m.color.lerp(_v1.set(0.6, 0.85, 1.0), ta * 0.8);
+        m.color.lerp(_c.setRGB(0.6, 0.85, 1.0), ta * 0.8);
         m.emissive.r += 0.05 * ta; m.emissive.g += 0.18 * ta; m.emissive.b += 0.3 * ta;
       } else if (t === 'burn') {
         m.color.multiplyScalar(1 - ta * 0.5);
         const f = (0.3 + Math.random() * 0.3) * ta;
         m.emissive.r += f; m.emissive.g += f * 0.35;
+      } else if (t === 'acid') {
+        // сначала зеленеет и дымится, потом остаются кости
+        const k1 = Math.min(1, ta), k2 = Math.max(0, Math.min(1, ta - 1));
+        m.color.lerp(_c.setRGB(0.35, 0.55, 0.12), k1 * 0.7).lerp(_c.setRGB(0.85, 0.82, 0.7), k2);
+        m.emissive.g += 0.08 * k1 * (1 - k2);
       } else if (t === 'char') {
         m.color.multiplyScalar(1 - ta * 0.85);
         const f = Math.max(0, ta - 0.6) * (0.15 + Math.random() * 0.1);
@@ -706,6 +758,7 @@ export class Character {
   dispose() {
     this.group.removeFromParent();
     for (const m of this.matList) m.dispose();
+    for (const g of this.ownGeos || []) g.dispose();
   }
 }
 

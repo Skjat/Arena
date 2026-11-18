@@ -1,9 +1,9 @@
 // Service worker: офлайн-кэш всех файлов игры.
-const VERSION = 'arena-v2';
+const VERSION = 'arena-v3';
 const FILES = [
   './', './index.html', './style.css', './manifest.webmanifest',
   './vendor/three.module.min.js',
-  './src/main.js', './src/arena.js', './src/audio.js', './src/battle.js', './src/character.js',
+  './src/main.js', './src/arena.js', './src/audio.js', './src/battle.js', './src/beast.js', './src/character.js', './src/hazards.js',
   './src/data.js', './src/enemy.js', './src/fx.js', './src/gesture.js', './src/input.js',
   './src/physics.js', './src/player.js', './src/save.js', './src/spells.js', './src/ui.js', './src/weapons3d.js',
   './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png'

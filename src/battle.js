@@ -1,12 +1,14 @@
 // Бой: связывает игрока, врагов, заклинания и эффекты; считает урон и расчленение.
 import * as THREE from 'three';
-import { getFight, SPELLS } from './data.js';
+import { buildRoster, SPELLS, ARENAS, FORMATS } from './data.js';
 import { Player, EYE } from './player.js';
 import { Enemy } from './enemy.js';
 import { Spells } from './spells.js';
 import { J, updateLoosePiece } from './character.js';
 import { ARENA_R } from './arena.js';
 import { GLYPH_TO_SPELL } from './gesture.js';
+import { Hazards } from './hazards.js';
+import { Ragdoll } from './physics.js';
 
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
 const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _c1 = new THREE.Vector3(), _c2 = new THREE.Vector3();
@@ -40,7 +42,7 @@ const PART_MULT = { head: 1.7, neck: 1.5, torso: 1, larm: 0.75, rarm: 0.75, lfor
 const PART_JOINT = { head: J.HEAD, neck: J.NECK, torso: J.NECK, larm: J.LEL, rarm: J.REL, lfore: J.LHA, rfore: J.RHA, lleg: J.LKN, rleg: J.RKN, lshin: J.LFT, rshin: J.RFT };
 
 export class Battle {
-  constructor(game, fightN) {
+  constructor(game, fightN, opts = {}) {
     this.game = game;
     this.scene = game.scene;
     this.camera = game.camera;
@@ -49,7 +51,11 @@ export class Battle {
     this.haptics = game.haptics;
     this.ui = game.ui;
     this.save = game.save;
-    this.fight = getFight(fightN);
+    this.arenaId = opts.arena || 'colosseum';
+    this.format = opts.format || 'duel';
+    this.opts = opts;
+    const roster = buildRoster(fightN, this.format);
+    this.fight = { n: fightN, gold: roster.gold, xp: roster.xp, enemies: roster.hostiles, allies: roster.allies, arena: this.arenaId, format: this.format };
     this.fightN = fightN;
     this.time = 0;
     this.timeScale = 1;
@@ -64,21 +70,36 @@ export class Battle {
     this.started = false;
     this.over = false;
     this.result = null;
-    this.stats = { decap: 0, dismember: 0, parries: 0, damageTaken: 0, kills: 0, gibbed: 0, backstabs: 0, maxCombo: 0 };
+    this.stats = { decap: 0, dismember: 0, parries: 0, damageTaken: 0, kills: 0, gibbed: 0, backstabs: 0, maxCombo: 0, envKills: 0, beasts: 0 };
     this.combo = 0; this.comboT = 0;
     this.fx.clear();
     this.fx.drops.camPos = this.camera.position;
     let lastSplash = 0;
     this.fx.drops.onScreenHit = () => { const t = performance.now(); if (t - lastSplash > 250) { lastSplash = t; this.ui.screenBlood(0.35); } };
     this.player = new Player(this, game.save);
-    const n = this.fight.enemies.length;
-    this.enemies = this.fight.enemies.map((def, i) => {
-      const spread = n === 1 ? 0 : (i - (n - 1) / 2) * 2.4;
-      return new Enemy(this, def, V(spread, 0, -4.5));
+    // арена с ловушками
+    this.hazards = new Hazards({ scene: this.scene, fx: this.fx, sound: this.sound, battle: this }, this.arenaId, fightN);
+    Ragdoll.world = this.hazards.walls.length ? this.hazards : null;
+    this.fx.drops.world = this.hazards;
+    const lay = this.hazards.spawnLayout(this.format, roster.allies.length, roster.hostiles.length);
+    const faceTo = (p, t) => Math.atan2(t.x - p.x, t.z - p.z);
+    const hostCenter = lay.hostiles.reduce((a, p) => a.add(p), V(0, 0, 0)).divideScalar(Math.max(1, lay.hostiles.length));
+    const allyCenter = lay.player.clone();
+    this.enemies = [];
+    roster.allies.forEach((def, i) => { this.enemies.push(new Enemy(this, { ...def, facing: faceTo(lay.allies[i], hostCenter) }, lay.allies[i])); });
+    roster.hostiles.forEach((def, i) => {
+      const facing = this.format === 'ffa' ? faceTo(lay.hostiles[i], V(0, 0, 0)) : faceTo(lay.hostiles[i], allyCenter);
+      this.enemies.push(new Enemy(this, { ...def, facing }, lay.hostiles[i]));
     });
-    this.player.pos.set(0, 0, 5);
-    this.player.yaw = 0;
+    this.player.pos.copy(lay.player);
+    const toward = this.format === 'ffa' ? V(0, 0, 0) : hostCenter;
+    this.player.yaw = Math.atan2(-(toward.x - lay.player.x), -(toward.z - lay.player.z));
     this.player.pickTarget();
+    if (this.player.target && this.hazards.walls.length && this.hazards.losBlocked(lay.player, this.player.target.pos)) {
+      const d = this.hazards.navLookAhead(lay.player, this.player.target.pos, this.player.target, 6);
+      if (d) this.player.yaw = Math.atan2(-d.x, -d.z);
+    }
+    this.feed = [];
     this.spells = new Spells(this);
     this.countdown = 2.4;
     this.ui.battleStart(this);
@@ -86,6 +107,9 @@ export class Battle {
   }
 
   dispose() {
+    Ragdoll.world = null;
+    this.fx.drops.world = null;
+    this.hazards.dispose();
     this.player.dispose();
     for (const e of this.enemies) e.dispose();
     for (const p of this.loose) {
@@ -112,6 +136,18 @@ export class Battle {
     this.shakeOffset.pos.set(n(1) * 0.04 * s, n(2) * 0.04 * s, 0);
     this.shakeOffset.rot.set(n(3) * 0.03 * s, n(4) * 0.03 * s, n(5) * 0.05 * s);
   }
+
+  // Живые бойцы (игрок + ИИ).
+  combatants() {
+    const out = [];
+    if (!this.player.dead) out.push(this.player);
+    for (const e of this.enemies) if (!e.dead) out.push(e);
+    return out;
+  }
+
+  hostilesOf(c) { return this.enemies.filter((e) => !e.dead && e.team !== c.team); }
+
+  get beasts() { return this.hazards ? this.hazards.beasts : []; }
 
   physEvents(enemy) {
     const ev = [];
@@ -144,6 +180,7 @@ export class Battle {
     this.handleInput(input);
     this.player.update(dt, input);
     for (const e of this.enemies) e.update(dt);
+    this.hazards.update(dt);
     const evs = this.events.slice();
     this.events.length = 0;
     for (const ev of evs) if (ev.length) this.processImpacts(ev.owner, ev);
@@ -174,7 +211,8 @@ export class Battle {
           const d = Math.hypot(o.pos.x - pel.x, o.pos.z - pel.z);
           if (d < 0.8 && pel.y < 1.6) {
             const vel = pv.clone().multiplyScalar(0.7).add(V(0, 2, 0));
-            this.damageEnemyMagic(o, { amount: sp * 1.5, kind: 'impact', dir: pv.clone().normalize(), knockdown: vel, point: o.chest() });
+            const by = e.lastAttacker && e.time - e.lastAttackerT < 4 ? e.lastAttacker : null;
+            this.damageEnemyMagic(o, { amount: sp * 1.5, kind: 'impact', dir: pv.clone().normalize(), knockdown: vel, point: o.chest(), attacker: by });
             rd.impulseAll(pv.clone().multiplyScalar(-0.4), 1);
             this.ui.floatText(o.chest(), 'СТРАЙК!', '#ffcc33');
             this.sound.thud(2);
@@ -282,10 +320,11 @@ export class Battle {
   testBlade(P, s, p0, p1, sdir) {
     const hits = [];
     const len = p0.distanceTo(p1);
-    for (const e of this.enemies) {
+    for (const e of [...this.enemies, ...this.beasts]) {
       if (s.hit.has(e)) continue;
+      if (!e.dead && e.team === P.team) continue;
       let best = null;
-      for (const c of e.ch.getCapsules()) {
+      for (const c of (e.isBeast ? e.getCapsules() : e.ch.getCapsules())) {
         const res = segSeg(p0, p1, c.a, c.b, _c1, _c2);
         const margin = e.dead ? 0.02 : 0.07;
         if (res.dist < c.r + margin) {
@@ -312,15 +351,16 @@ export class Battle {
     for (const ev of evs) {
       if (ev.type === 'wall' && ev.speed > 5.5) {
         this.sound.thud(ev.speed / 5);
-        this.fx.decals.addWall(ev.pos, 0.35 + ev.speed * 0.04);
-        this.fx.blood(ev.pos, V(-ev.pos.x, 0.3, -ev.pos.z).normalize(), 1, 3);
+        const nrm = ev.normal ? V(ev.normal.x, 0, ev.normal.z) : V(-ev.pos.x, 0, -ev.pos.z).normalize();
+        this.fx.decals.addWall(ev.pos, 0.35 + ev.speed * 0.04, nrm);
+        this.fx.blood(ev.pos, nrm.clone().setY(0.3).normalize(), 1, 3);
         this.fx.dust(ev.pos, 6);
         if (!e.dead && e.time - (e.lastImpactT || -9) > 0.35) {
           e.lastImpactT = e.time;
           const dmg = (ev.speed - 4.5) * 5.5;
           this.ui.floatText(ev.pos, 'В СТЕНУ!', '#ffcc33');
           this.shake(0.3);
-          this.damageEnemyMagic(e, { amount: dmg, kind: 'impact', dir: V(-ev.pos.x, 0, -ev.pos.z).normalize(), point: ev.pos.clone() });
+          this.damageEnemyMagic(e, { amount: dmg, kind: 'impact', dir: nrm.clone(), point: ev.pos.clone(), hazard: 'wall' });
         }
       } else if (ev.type === 'ground' && ev.speed > 7) {
         this.sound.thud(ev.speed / 7);
@@ -337,6 +377,8 @@ export class Battle {
     const W = P.wtype;
     const kind = s.kind;
     const fx = this.fx;
+    if (e.isBeast) return this.playerHitBeast(P, s, e, part, point, dir);
+    if (!e.dead) { e.lastAttacker = P; e.lastAttackerT = e.time; }
     // по трупу — только кровь и расчленение
     if (e.dead) {
       fx.blood(point, dir, 1.2, 4);
@@ -407,14 +449,19 @@ export class Battle {
     const fx = this.fx;
     const heavy = Math.min(2, dmg / 20);
     const wasFrozen = e.status.frozen > 0;
+    const byPlayer = !!(P && P.isPlayer);
+    const near = e.distToPlayer() < 5;
     e.hp -= dmg;
     e.lastHitT = e.time;
-    this.combo++; this.comboT = 2.5;
-    this.stats.maxCombo = Math.max(this.stats.maxCombo, this.combo);
-    P.bloodOnBlade = Math.min(1, (P.bloodOnBlade || 0) + 0.12 + heavy * 0.05);
+    if (P) { e.lastAttacker = P; e.lastAttackerT = e.time; }
+    if (byPlayer) {
+      this.combo++; this.comboT = 2.5;
+      this.stats.maxCombo = Math.max(this.stats.maxCombo, this.combo);
+      P.bloodOnBlade = Math.min(1, (P.bloodOnBlade || 0) + 0.12 + heavy * 0.05);
+      this.ui.damageNumber(point, dmg, part === 'head' || backstab);
+      if (backstab) this.ui.floatText(point.clone().add(V(0, 0.3, 0)), 'УДАР В СПИНУ!', '#ff3344');
+    }
     e.ch.flash = 0.6;
-    this.ui.damageNumber(point, dmg, part === 'head' || backstab);
-    if (backstab) this.ui.floatText(point.clone().add(V(0, 0.3, 0)), 'УДАР В СПИНУ!', '#ff3344');
     if (wasFrozen) {
       fx.magicBurst(point, 0xc8f4ff, 20, 4);
       this.sound.ice();
@@ -422,39 +469,41 @@ export class Battle {
       fx.blood(point, dir.clone().add(V(0, 0.25, 0)), 1 + heavy, 3.5 + heavy * 2);
       if (part === 'neck' || part === 'head') fx.blood(point, dir.clone().multiplyScalar(-0.5).add(V(0, 0.6, 0)), 0.8, 3);
     }
-    this.sound.hit(heavy);
+    this.sound.hit(heavy * (near ? 1 : 0.6));
     if (Math.random() < 0.5) this.sound.voice(e.voicePitch, 'grunt');
-    this.haptics.pulse(0.8 + heavy * 0.5);
-    this.shake(0.15 + heavy * 0.12);
-    this.hitstop(0.045 + heavy * 0.03);
+    if (byPlayer) {
+      this.haptics.pulse(0.8 + heavy * 0.5);
+      this.shake(0.15 + heavy * 0.12);
+      this.hitstop(0.045 + heavy * 0.03);
+    } else if (near) this.shake(0.08);
     // близкий удар — брызги на экран
     if (e.distToPlayer() < 2.0 && Math.random() < 0.35 + heavy * 0.2) this.ui.screenBlood(0.4 + heavy * 0.2);
     // кровотечение
     if (W.bleed > 0 && !wasFrozen) { e.status.bleed = Math.max(e.status.bleed, 2.5 * W.bleed); e.status.bleedDps = Math.max(e.status.bleedDps, 1.5 * W.bleed + dmg * 0.04); }
     const killed = e.hp <= 0;
     if (killed) {
-      this.killEnemy(e, { kind: 'melee', dir, part, point, weapon: W, overkill: -e.hp, heavy, frozen: wasFrozen });
+      this.killEnemy(e, { kind: 'melee', dir, part, point, weapon: W, overkill: -e.hp, heavy, frozen: wasFrozen, attacker: P });
       return;
     }
     // замороженный враг разбивается от мощного удара
     if (wasFrozen && dmg > e.maxHp * 0.3) {
-      this.killEnemy(e, { kind: 'melee', dir, part, point, weapon: W, overkill: 0, heavy, frozen: true });
+      this.killEnemy(e, { kind: 'melee', dir, part, point, weapon: W, overkill: 0, heavy, frozen: true, attacker: P });
       return;
     }
     // отрубание конечностей у живого
     const limb = part === 'larm' || part === 'rarm' || part === 'lfore' || part === 'rfore';
     if (limb && W.sever > 0 && dmg > 12 && Math.random() < W.sever * 0.55 * Math.min(1.4, dmg / 22)) {
-      this.severPart(e, part, dir, 1);
+      this.severPart(e, part, dir, 1, byPlayer);
       if ((part === 'rarm' || part === 'rfore') && Math.random() < 0.6) this.ui.floatText(e.chest().add(V(0, 0.5, 0)), ['Это просто царапина!', 'Ерунда!', 'Я ещё не закончил!'][Math.floor(Math.random() * 3)], '#ffffff', 16);
       e.hp -= e.maxHp * 0.1;
       e.status.bleed = 8; e.status.bleedDps = Math.max(e.status.bleedDps, e.maxHp * 0.025);
       this.sound.voice(e.voicePitch, 'scream');
-      this.slowmo(0.35, 0.5);
-      if (e.hp <= 0) { this.killEnemy(e, { kind: 'melee', dir, part: 'torso', point, weapon: W, overkill: 0, heavy }); return; }
+      if (byPlayer) this.slowmo(0.35, 0.5);
+      if (e.hp <= 0) { this.killEnemy(e, { kind: 'melee', dir, part: 'torso', point, weapon: W, overkill: 0, heavy, attacker: P }); return; }
     }
     const legHit = (part === 'lleg' || part === 'rleg' || part === 'lshin' || part === 'rshin');
     if (legHit && W.sever > 0.5 && dmg > 22 && Math.random() < W.sever * 0.3) {
-      this.severPart(e, part, dir, 1);
+      this.severPart(e, part, dir, 1, byPlayer);
       e.knockdown(dir.clone().multiplyScalar(2).add(V(0, 1, 0)), PART_JOINT[part]);
       this.sound.voice(e.voicePitch, 'scream');
       return;
@@ -474,13 +523,47 @@ export class Battle {
       e.poise = e.maxPoise;
       e.attack = null;
       e.stagger(0.5 + Math.min(0.4, dmg / e.maxHp));
-      this.ui.floatText(e.chest().add(V(0, 0.35, 0)), 'ОШЕЛОМЛЁН', '#ffaa33', 15);
+      if (byPlayer) this.ui.floatText(e.chest().add(V(0, 0.35, 0)), 'ОШЕЛОМЛЁН', '#ffaa33', 15);
     }
+  }
+
+  // Удар одного ИИ по другому.
+  aiMeleeHit(att, tgt, at, dmg, W) {
+    if (tgt.dead) return;
+    const dir = V(tgt.pos.x - att.pos.x, 0, tgt.pos.z - att.pos.z).normalize();
+    const facing = -(Math.sin(tgt.ch.facing) * dir.x + Math.cos(tgt.ch.facing) * dir.z);
+    const point = tgt.chest();
+    const near = tgt.distToPlayer() < 6;
+    tgt.lastAttacker = att; tgt.lastAttackerT = tgt.time;
+    if (tgt.blocking && facing > 0.25) {
+      this.fx.sparks(point, dir.clone().negate(), 14);
+      if (near) this.sound.clang(0.9);
+      if (W && W.guardBreak) tgt.stagger(0.8); else att.stagger(0.3);
+      return;
+    }
+    if (tgt.shield) {
+      const absorbed = Math.min(tgt.shield.hp, dmg);
+      tgt.shield.hp -= absorbed; dmg -= absorbed;
+      tgt.shieldMesh.material.uniforms.hit.value = 1;
+      if (dmg <= 0.5) return;
+    }
+    const r = Math.random();
+    const part = at.type === 'overhead' ? (r < 0.35 ? 'head' : r < 0.5 ? 'neck' : r < 0.75 ? 'torso' : 'larm')
+      : at.type === 'thrust' ? (r < 0.15 ? 'neck' : 'torso')
+      : (r < 0.12 ? 'neck' : r < 0.55 ? 'torso' : r < 0.8 ? (Math.random() < 0.5 ? 'larm' : 'rarm') : (Math.random() < 0.5 ? 'lfore' : 'rfore'));
+    const armor = part === 'head' || part === 'neck' ? tgt.armor.head : part === 'torso' ? tgt.armor.body : tgt.armor.limbs;
+    const Wt = W || { knock: 1.5, sever: 0, crush: 0, bleed: 0, guardBreak: false, armorPierce: 0, backstab: 1.5 };
+    dmg *= PART_MULT[part] * 100 / (100 + armor * (1 - Wt.armorPierce) * 4);
+    const backstab = facing < -0.35;
+    if (backstab) dmg *= 1.5;
+    const jp = tgt.ch.pose[PART_JOINT[part]] || point;
+    this.applyMeleeDamage(tgt, dmg, part, jp.clone(), dir, Wt, backstab, at.type === 'thrust' ? 'thrust' : 'slash', att);
   }
 
   // Урон заклинаниями/физикой.
   damageEnemyMagic(e, o) {
     if (e.dead) return;
+    if (o.attacker) { e.lastAttacker = o.attacker; e.lastAttackerT = e.time; }
     let dmg = o.amount;
     if (e.shield && o.kind !== 'drain' && o.kind !== 'impact') {
       const absorbed = Math.min(e.shield.hp, dmg);
@@ -493,7 +576,7 @@ export class Battle {
     e.hp -= dmg;
     e.lastHitT = e.time;
     if (!o.silent) {
-      this.ui.damageNumber(o.point || e.chest(), dmg, false, o.kind);
+      if (o.attacker && o.attacker.isPlayer) this.ui.damageNumber(o.point || e.chest(), dmg, false, o.kind);
       e.ch.flash = 0.5;
       if (o.kind !== 'frost' && o.kind !== 'lightning') this.fx.blood(o.point || e.chest(), o.dir || V(0, 1, 0), 0.7, 3);
       this.sound.voice(e.voicePitch, 'grunt');
@@ -502,7 +585,7 @@ export class Battle {
     if (o.stun) { e.status.stun = Math.max(e.status.stun, o.stun); e.interrupt(); e.attack = null; if (e.state === 'attack') e.state = 'idle'; }
     if (o.freeze && e.hp > 0) { e.status.frozen = o.freeze; e.interrupt(); e.attack = null; if (e.state === 'attack' || e.state === 'cast') e.state = 'idle'; if (e.ch.mode === 'ragdoll') e.status.frozen = 0; }
     if (e.hp <= 0) {
-      this.killEnemy(e, { kind: o.kind, dir: o.dir || V(0, 0, 0), part: 'torso', point: o.point, overkill: -e.hp, explosive: o.explosive, knock: o.knockdown });
+      this.killEnemy(e, { kind: o.kind, dir: o.dir || V(0, 0, 0), part: 'torso', point: o.point, overkill: -e.hp, explosive: o.explosive, knock: o.knockdown, attacker: o.attacker, hazard: o.hazard });
       return;
     }
     if (!o.silent) e.interrupt();
@@ -510,7 +593,7 @@ export class Battle {
   }
 
   // Отрубить часть (с учётом иерархии).
-  severPart(e, part, dir, power = 1) {
+  severPart(e, part, dir, power = 1, byPlayer = true) {
     let key = part;
     if (part === 'neck' || part === 'head') key = 'head';
     if (!['head', 'larm', 'rarm', 'lfore', 'rfore', 'lleg', 'rleg', 'lshin', 'rshin'].includes(key)) return null;
@@ -539,8 +622,10 @@ export class Battle {
     this.shake(0.4);
     this.game.arena.cheer(1);
     this.sound.cheer(0.8);
-    if (key === 'head') { this.stats.decap++; this.save.stats.decapitations++; }
-    else { this.stats.dismember++; this.save.stats.dismemberments++; }
+    if (byPlayer) {
+      if (key === 'head') { this.stats.decap++; this.save.stats.decapitations++; }
+      else { this.stats.dismember++; this.save.stats.dismemberments++; }
+    }
     // выбитое оружие отлетает с рукой
     return gib;
   }
@@ -556,8 +641,14 @@ export class Battle {
     e.rune.visible = false;
     e.ch.anim.jitter = 0;
     e.ch.frozen = false;
-    this.stats.kills++;
-    this.save.stats.kills++;
+    // кто убил: прямой убийца или тот, кто недавно толкнул в ловушку
+    let killer = info.attacker || null;
+    if (!killer && e.lastAttacker && e.time - e.lastAttackerT < 6) killer = e.lastAttacker;
+    const byPlayer = !!(killer && killer.isPlayer);
+    info.byPlayer = byPlayer;
+    if (byPlayer) { this.stats.kills++; this.save.stats.kills++; }
+    if (info.hazard && byPlayer && info.hazard !== 'wall') this.stats.envKills++;
+    this.killFeed(killer, e, info);
     const fx = this.fx, W = info.weapon;
     const dir = (info.dir && info.dir.lengthSq() > 0) ? info.dir.clone() : V(0, 0, 1);
     let msg = null;
@@ -574,9 +665,9 @@ export class Battle {
       fx.magicBurst(ch.pose[J.NECK], 0xc8f4ff, 60, 6);
       fx.bloodBurst(ch.pose[J.PELVIS], 1);
       ch.hideAll();
-      if (ch.weapon && ch.weaponAttached) { const w = ch.dropWeapon(); if (w) this.loose.push(w); w && (w.group.visible = true); }
+      if (ch.weapon && ch.weaponAttached) { const w = ch.dropWeapon(); if (w) { this.loose.push(w); this.scene.add(w.group); } }
       this.sound.shatter();
-      this.stats.gibbed++; this.save.stats.gibbed++;
+      if (byPlayer) { this.stats.gibbed++; this.save.stats.gibbed++; }
       msg = 'ВДРЕБЕЗГИ!';
       this.finishKill(e, msg, 1.4);
       return;
@@ -596,12 +687,12 @@ export class Battle {
       for (const p of ['head', 'larm', 'rarm', 'lleg', 'rleg']) {
         if (Math.random() < 0.75) {
           const out = V().subVectors(e.ch.pose[SEVERJ[p]], e.ch.pose[J.PELVIS]).normalize();
-          this.severPart(e, p, out.multiplyScalar(2).add(dir), 3);
+          this.severPart(e, p, out.multiplyScalar(2).add(dir), 3, byPlayer);
         }
       }
       fx.bloodBurst(e.ch.pose[J.PELVIS], 2.5);
       fx.gore(e.ch.pose[J.PELVIS], V(0, 1, 0), 2);
-      this.stats.gibbed++; this.save.stats.gibbed++;
+      if (byPlayer) { this.stats.gibbed++; this.save.stats.gibbed++; }
       msg = 'РАЗОРВАН!';
     } else if ((part === 'head' || part === 'neck') && W) {
       if (W.crush > 0 && Math.random() < W.crush) {
@@ -612,42 +703,111 @@ export class Battle {
         fx.gore(hp, dir, 2.2, [0x8a0a0a, 0xd8a888, 0xe8dcc0, 0x5a0000, 0xb05050]);
         fx.emitter(() => e.ch.pose[J.NECK], () => V().subVectors(e.ch.pose[J.NECK], e.ch.pose[J.PELVIS]).normalize(), 60, 3.5, 3.5);
         this.sound.crunch(); this.sound.gore();
-        this.stats.gibbed++; this.save.stats.gibbed++;
+        if (byPlayer) { this.stats.gibbed++; this.save.stats.gibbed++; }
         msg = 'ЧЕРЕП РАЗДРОБЛЕН!';
       } else if (sev > 0 && Math.random() < Math.min(0.95, sev * 1.5 + 0.2)) {
-        this.severPart(e, 'head', dir, 2);
+        this.severPart(e, 'head', dir, 2, byPlayer);
         msg = 'ОБЕЗГЛАВЛЕН!';
-        this.slowmo(0.25, 1.1);
+        if (byPlayer) this.slowmo(0.25, 1.1);
       }
     } else if (W && sev > 0.3 && part && part !== 'torso' && Math.random() < sev) {
-      this.severPart(e, part, dir, 2);
+      this.severPart(e, part, dir, 2, byPlayer);
       msg = 'РАСЧЛЕНЁН!';
     } else if (W && sev > 0.5 && part === 'torso' && info.overkill > 15 && Math.random() < sev * 0.5) {
-      this.severPart(e, Math.random() < 0.5 ? 'larm' : 'rarm', dir, 2);
+      this.severPart(e, Math.random() < 0.5 ? 'larm' : 'rarm', dir, 2, byPlayer);
       msg = 'РАСЧЛЕНЁН!';
     }
+    if (!msg && info.hazard === 'acid') msg = 'РАСТВОРЁН!';
+    if (!msg && info.hazard === 'spikes') msg = 'НАСАЖЕН НА ШИПЫ!';
+    if (!msg && info.hazard === 'beast') msg = 'РАСТЕРЗАН!';
+    if (!msg && info.hazard === 'wall') msg = 'РАЗМАЗАН ПО СТЕНЕ!';
     if (info.kind === 'fire') { e.status.burn = 4; e.ch.tint = 'char'; }
     if (info.kind === 'lightning') { e.ch.tint = 'char'; e.ch.tintAmt = 0.6; }
     fx.bloodBurst(e.ch.pose[J.NECK], 0.8);
     this.sound.voice(e.voicePitch, 'death');
-    this.finishKill(e, msg, 1);
+    this.finishKill(e, msg, 1, byPlayer);
   }
 
-  finishKill(e, msg, power) {
+  killFeed(killer, victim, info) {
+    if (this.format === 'duel') return;
+    const kn = killer ? (killer.isPlayer ? 'Вы' : killer.isBeast ? killer.name : killer.name) : (info.hazard === 'acid' ? 'Кислота' : info.hazard === 'spikes' ? 'Шипы' : info.hazard === 'beast' ? 'Зверь' : info.hazard === 'wall' ? 'Стена' : 'Арена');
+    const cls = (c) => (!c ? 'env' : c.isPlayer ? 'me' : c.isBeast ? 'env' : c.team === 0 ? 'ally' : 'foe');
+    this.ui.killFeed(kn, cls(killer), victim.name, cls(victim), info);
+  }
+
+  finishKill(e, msg, power, byPlayer = true) {
     const fx = this.fx;
     // лужа под телом
     const pel = e.ch.ragdoll ? e.ch.ragdoll.p[J.PELVIS] : e.ch.pose[J.PELVIS];
     setTimeout(() => { if (e.ch.group.visible) fx.decals.pool(pel, 1.4 + Math.random() * 0.6); }, 900);
-    this.hitstop(0.11);
-    this.shake(0.5);
-    this.haptics.pulse(3);
+    const near = e.distToPlayer() < 6;
+    if (byPlayer || near) { this.hitstop(byPlayer ? 0.11 : 0.05); this.shake(byPlayer ? 0.5 : 0.25); }
+    if (byPlayer) this.haptics.pulse(3);
     this.game.arena.cheer(1.5);
     this.sound.cheer(1.5);
-    if (msg) this.ui.centerText(msg, 'kill');
-    const alive = this.enemies.filter((x) => !x.dead).length;
-    if (alive === 0) this.slowmo(0.2, 1.6);
-    else if (msg) this.slowmo(0.35, 0.6);
+    if (msg && (byPlayer || near)) this.ui.centerText(msg, 'kill');
+    const alive = this.hostilesOf(this.player).length;
+    if (alive === 0 && !e.isAlly) this.slowmo(0.2, 1.6);
+    else if (msg && byPlayer) this.slowmo(0.35, 0.6);
     if (this.player.target === e) this.player.pickTarget();
+  }
+
+  // ===== Звери =====
+  playerHitBeast(P, s, b, part, point, dir) {
+    const fx = this.fx;
+    fx.blood(point, dir, 1.3, 4);
+    P.bloodOnBlade = Math.min(1, (P.bloodOnBlade || 0) + 0.12);
+    s.hits++;
+    if (b.dead) { this.sound.hit(0.6); return false; }
+    const dmg = this.wdmg(P, s) * (part === 'head' ? 1.6 : part === 'neck' ? 1.4 : part === 'leg' ? 0.7 : 1);
+    this.ui.damageNumber(point, dmg, part === 'head');
+    this.sound.hit(Math.min(2, dmg / 20));
+    this.hitstop(0.05);
+    this.shake(0.2);
+    this.haptics.pulse(1);
+    if (b.hurt(dmg, dir.clone().setY(0))) {
+      this.stats.beasts++;
+      fx.bloodBurst(b.chest(), 1.5);
+      this.ui.centerText('ЗВЕРЬ ПОВЕРЖЕН!', 'kill');
+      this.sound.cheer(1.5); this.game.arena.cheer(1.5);
+      this.slowmo(0.35, 0.6);
+      fx.decals.pool(b.chest().clone(), 1.6);
+    }
+    return false;
+  }
+
+  beastBite(beast, prey, dir) {
+    const fx = this.fx;
+    const point = prey.chest();
+    fx.blood(point, dir.clone().setY(0.4), 2, 4.5);
+    this.sound.gore();
+    prey.status.bleed = Math.max(prey.status.bleed, 4); prey.status.bleedDps = Math.max(prey.status.bleedDps, 3);
+    this.damageEnemyMagic(prey, { amount: beast.dmg, kind: 'beast', dir, point, hazard: 'beast' });
+    if (prey.dead) return;
+    if (prey.hp < prey.maxHp * 0.55 && Math.random() < 0.35) {
+      const arm = ['larm', 'rarm', 'lfore', 'rfore'].filter((p) => !prey.ch.severed.has(p));
+      if (arm.length) {
+        this.severPart(prey, arm[Math.floor(Math.random() * arm.length)], dir.clone().negate().setY(1), 1.5, false);
+        this.sound.voice(prey.voicePitch, 'scream');
+        if (prey.distToPlayer() < 9) this.ui.floatText(point.clone().add(V(0, 0.5, 0)), 'ОТГРЫЗ РУКУ!', '#ffcc33');
+      }
+    }
+    prey.knock = dir.clone().setY(0).multiplyScalar(4);
+    prey.stagger(0.45);
+  }
+
+  beastMaul(beast, corpse) {
+    const rd = corpse.ch.ragdoll;
+    if (!rd) return;
+    const pel = rd.p[J.PELVIS];
+    this.fx.blood(pel, V(0, 1, 0), 2, 4);
+    this.sound.gore();
+    const parts = ['larm', 'rarm', 'lleg', 'rleg', 'head'].filter((p) => !corpse.ch.severed.has(p));
+    if (parts.length && Math.random() < 0.55) {
+      const out = V(pel.x - beast.post.x, 0, pel.z - beast.post.z).normalize().setY(1.2);
+      this.severPart(corpse, parts[Math.floor(Math.random() * parts.length)], out, 2, false);
+    }
+    rd.impulseAll(V((Math.random() - 0.5) * 3, 2.5, (Math.random() - 0.5) * 3), 1);
   }
 
   // ===== Урон по игроку =====
@@ -744,7 +904,7 @@ export class Battle {
 
   checkEnd(rdt) {
     if (this.over) return;
-    const alive = this.enemies.filter((e) => !e.dead).length;
+    const alive = this.hostilesOf(this.player).length;
     if (this.player.dead) {
       this.endT = (this.endT || 0) + rdt;
       if (this.endT > 2.6) this.finish(false);
@@ -757,7 +917,7 @@ export class Battle {
   finish(win) {
     this.over = true;
     this.setRuneMode(false);
-    this.result = { win, stats: this.stats, fight: this.fight };
+    this.result = { win, stats: this.stats, fight: this.fight, arena: this.arenaId, format: this.format, randArena: !!this.opts.randArena, randFormat: !!this.opts.randFormat };
     this.game.onBattleEnd(this.result);
   }
 }

@@ -37,6 +37,20 @@ function sandTexture() {
   }, 7);
 }
 
+function flagstoneTexture() {
+  return canvasTex(512, 512, (g, w, h) => {
+    g.fillStyle = '#4a4440'; g.fillRect(0, 0, w, h);
+    const n = 6, cs = w / n;
+    for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+      const v = 95 + Math.random() * 45;
+      g.fillStyle = `rgb(${v + 6},${v},${v - 8})`;
+      const ox = (j % 2) * cs * 0.5;
+      g.fillRect(i * cs + ox + 3, j * cs + 3, cs - 6, cs - 6);
+      for (let k = 0; k < 30; k++) { g.fillStyle = `rgba(0,0,0,${Math.random() * 0.12})`; g.fillRect(i * cs + ox + Math.random() * cs, j * cs + Math.random() * cs, 4, 4); }
+    }
+  }, 6);
+}
+
 function stoneTexture() {
   return canvasTex(512, 256, (g, w, h) => {
     g.fillStyle = '#6b5f52'; g.fillRect(0, 0, w, h);
@@ -96,6 +110,7 @@ export class Arena {
     // Свет
     const hemi = new THREE.HemisphereLight(0xa0a8ff, 0x8a5a30, 0.9);
     scene.add(hemi);
+    this.hemi = hemi;
     const sun = new THREE.DirectionalLight(0xffc890, 2.1);
     sun.position.set(-12, 22, 8);
     sun.castShadow = true;
@@ -115,6 +130,8 @@ export class Arena {
     floor.rotation.x = -Math.PI / 2;
     floor.receiveShadow = true;
     scene.add(floor);
+    this.floor = floor;
+    this.sandTex = sand;
     // кольцо у стены
     const ring = new THREE.Mesh(new THREE.RingGeometry(ARENA_R - 0.6, ARENA_R + 0.1, 64), new THREE.MeshStandardMaterial({ color: 0x6a5238, roughness: 1 }));
     ring.rotation.x = -Math.PI / 2; ring.position.y = 0.004; ring.receiveShadow = true;
@@ -268,6 +285,29 @@ export class Arena {
       this.crowd.setMatrixAt(i, m);
     }
     this.crowd.instanceMatrix.needsUpdate = true;
+  }
+
+  // Оформление под конкретную арену.
+  setVariant(id) {
+    if (this.variant === id) return;
+    this.variant = id;
+    const V = {
+      colosseum: { floor: 0xffffff, fog: 0x3a2030, sky: 0xa0a8ff, ground: 0x8a5a30, sun: 0xffc890, sunI: 2.1, tex: 'sand' },
+      acid: { floor: 0x9aa88a, fog: 0x1c2a16, sky: 0x9ac090, ground: 0x4a6a30, sun: 0xd8ffb0, sunI: 1.7, tex: 'stone' },
+      beasts: { floor: 0x9a8070, fog: 0x2a1610, sky: 0x9a8aa0, ground: 0x6a3a20, sun: 0xffa060, sunI: 1.6, tex: 'sand' },
+      labyrinth: { floor: 0xd8d0c8, fog: 0x2a2e3e, sky: 0xc0c8ff, ground: 0x7a7068, sun: 0xe8e0ff, sunI: 2.3, tex: 'stone', hemiI: 1.5 },
+      spikes: { floor: 0xa08070, fog: 0x2e1414, sky: 0xc0a0a0, ground: 0x7a3020, sun: 0xffb090, sunI: 2.0, tex: 'sand' }
+    }[id] || {};
+    if (V.tex === 'stone' && !this.stoneTex) this.stoneTex = flagstoneTexture();
+    this.floor.material.map = V.tex === 'stone' ? this.stoneTex : this.sandTex;
+    this.floor.material.color.setHex(V.floor);
+    this.floor.material.needsUpdate = true;
+    this.scene.fog.color.setHex(V.fog);
+    this.hemi.color.setHex(V.sky);
+    this.hemi.groundColor.setHex(V.ground);
+    this.sun.color.setHex(V.sun);
+    this.sun.intensity = V.sunI;
+    this.hemi.intensity = V.hemiI || 0.9;
   }
 
   cheer(amount = 1) { this.excitement = Math.min(1.2, this.excitement + 0.4 * amount); }

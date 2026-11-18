@@ -15,6 +15,7 @@ export function defaultSave() {
     upgrades: { manaPool: 0, manaFlow: 0, vitality: 0 },
     stats: { kills: 0, decapitations: 0, dismemberments: 0, deaths: 0, parries: 0, gibbed: 0 },
     settings: { sound: true, haptics: true, quality: 'auto', lefty: false, blood: 2 },
+    prefs: { arena: 'colosseum', format: 'duel' },
     seenTutorial: false
   };
 }
@@ -27,7 +28,7 @@ export function loadSave() {
     const def = defaultSave();
     // Мягкое слияние с дефолтом (на случай новых полей).
     const merged = { ...def, ...data };
-    for (const k of ['owned', 'equipped', 'spells', 'upgrades', 'stats', 'settings']) {
+    for (const k of ['owned', 'equipped', 'spells', 'upgrades', 'stats', 'settings', 'prefs']) {
       merged[k] = { ...def[k], ...(data[k] || {}) };
     }
     return merged;

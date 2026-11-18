@@ -211,12 +211,12 @@ export const ARCHETYPES = {
   knight: {
     title: 'Рыцарь', weapon: 'steel_sword', hp: 105, armor: { head: 14, body: 18, limbs: 6 },
     spells: ['shield'], aggr: 0.5, block: 0.55, dodge: 0.05, react: 0.26, speed: 2.9,
-    look: { helm: 'knight', top: 'plate', cloth: 0x2a3a8a, pants: 0x9aa2ab, skin: 0xe0b090, hair: 0x6a4a2a }
+    look: { helm: 'knight', top: 'plate', cloth: 0x6a5a2a, pants: 0x9aa2ab, skin: 0xe0b090, hair: 0x6a4a2a }
   },
   stormcaller: {
     title: 'Громовержец', weapon: 'iron_spear', hp: 85, armor: { head: 0, body: 6, limbs: 0 },
     spells: ['lightning', 'blink'], caster: true, aggr: 0.45, block: 0.25, dodge: 0.3, react: 0.3, speed: 3.4,
-    look: { helm: 'mage', top: 'robe', cloth: 0x1a3a8a, pants: 0x101a3a, skin: 0xc8a080, hair: 0xdddddd, glow: 0x66bbff }
+    look: { helm: 'mage', top: 'robe', cloth: 0x4a2a7a, pants: 0x1a1030, skin: 0xc8a080, hair: 0xdddddd, glow: 0x66bbff }
   },
   berserker: {
     title: 'Берсерк', weapon: 'greatsword', hp: 120, armor: { head: 3, body: 2, limbs: 0 },
@@ -305,4 +305,75 @@ export function rankName(fightsWon) {
 
 export function rankIndex(fightsWon) {
   return Math.floor(fightsWon / 2);
+}
+
+// ===== Арены и форматы боя =====
+export const ARENAS = {
+  colosseum: { name: 'Колизей', icon: '🏛', mult: 1.0, desc: 'Песок и кровь. Ничего лишнего.' },
+  acid: { name: 'Кислотные ямы', icon: '🧪', mult: 1.15, desc: 'Кислота растворяет плоть. Толкайте врагов в ямы.' },
+  beasts: { name: 'Звериная яма', icon: '🐺', mult: 1.2, desc: 'Звери на цепях рвут любого, кто подойдёт.' },
+  labyrinth: { name: 'Лабиринт', icon: '🧱', mult: 1.1, desc: 'Стены, коридоры и засады за углом.' },
+  spikes: { name: 'Мясорубка', icon: '⚙', mult: 1.15, desc: 'Шипы бьют из решёток. Красное свечение — беги.' }
+};
+export const ARENA_ORDER = ['colosseum', 'acid', 'beasts', 'labyrinth', 'spikes'];
+
+export const FORMATS = {
+  duel: { name: '1 на 1', icon: '⚔', mult: 1.0, desc: 'Классический поединок.' },
+  ffa: { name: 'Все против всех', icon: '☠', mult: 1.5, desc: 'Каждый сам за себя. Победитель один.' },
+  team2: { name: '2 на 2', icon: '🛡', mult: 1.2, desc: 'Вы с союзником против двоих.' },
+  team3: { name: '3 на 3', icon: '🛡🛡', mult: 1.35, desc: 'Отряд на отряд.' }
+};
+export const FORMAT_ORDER = ['duel', 'ffa', 'team2', 'team3'];
+
+// Надбавка за выбор «на волю судьбы».
+export const RANDOM_BONUS = { arena: 0.25, format: 0.25, both: 0.6 };
+
+export function rewardMult(arena, format, randArena, randFormat) {
+  const bonus = randArena && randFormat ? RANDOM_BONUS.both : randArena ? RANDOM_BONUS.arena : randFormat ? RANDOM_BONUS.format : 0;
+  return { mult: ARENAS[arena].mult * FORMATS[format].mult * (1 + bonus), bonus };
+}
+
+function poolFor(n) {
+  const p = ['recruit', 'cutthroat', 'spearman'];
+  if (n >= 3) p.push('pyromancer', 'knight');
+  if (n >= 6) p.push('executioner', 'stormcaller', 'berserker');
+  if (n >= 9) p.push('frostwitch', 'crusher', 'bloodmage');
+  if (n >= 14) p.push('champion');
+  return p;
+}
+
+// Состав участников боя n в выбранном формате.
+export function buildRoster(n, format) {
+  const base = getFight(n);
+  const r = rngFor(n * 31 + FORMAT_ORDER.indexOf(format) * 7 + 5);
+  const pick = (arr) => arr[Math.floor(r() * arr.length)];
+  const pool = poolFor(n);
+  const used = new Set(base.enemies.map((e) => e.name));
+  const newName = () => {
+    let name, k = 0;
+    do { name = pick(NAMES); k++; } while (used.has(name) && k < 50);
+    used.add(name);
+    return name;
+  };
+  const mains = base.enemies.slice().sort((a, b) => b.boss - a.boss);
+  let hostiles = [], allies = [];
+  const extra = (count, scale, team) => {
+    const out = [];
+    for (let i = 0; i < count; i++) out.push({ archetype: pick(pool), boss: false, name: newName(), level: n, groupScale: scale, team });
+    return out;
+  };
+  if (format === 'duel') {
+    hostiles = [{ ...mains[0], groupScale: 1, team: 1 }];
+  } else if (format === 'ffa') {
+    const count = n >= 8 ? 4 : 3;
+    hostiles = mains.slice(0, count).map((e) => ({ ...e, groupScale: 0.85 }));
+    hostiles.push(...extra(count - hostiles.length, 0.85));
+    hostiles.forEach((e, i) => { e.team = i + 1; });
+  } else {
+    const N = format === 'team3' ? 3 : 2;
+    hostiles = mains.slice(0, N).map((e) => ({ ...e, groupScale: 0.85, team: 1 }));
+    hostiles.push(...extra(N - hostiles.length, 0.85, 1));
+    allies = extra(N - 1, 0.95, 0);
+  }
+  return { n, hostiles, allies, gold: base.gold, xp: base.xp };
 }

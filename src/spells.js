@@ -90,6 +90,20 @@ export class Spells {
     return V(P.pos.x + f.x * 10, 1.2, P.pos.z + f.z * 10);
   }
 
+  // Урон по любому бойцу (игроку или ИИ) от заклинания.
+  hit(target, caster, o) {
+    const B = this.battle;
+    if (!target || target.dead) return;
+    if (target.isPlayer) {
+      B.damagePlayer({ amount: o.amount, dir: (o.dir || V(0, 0, 1)).clone().setY(0).normalize(), source: caster && !caster.isPlayer ? caster : null, kind: o.kind, blockable: !!o.blockable, knock: o.knock, stun: o.stunP, stagger: o.stagger, slow: o.slow, silent: o.silent });
+    } else {
+      B.damageEnemyMagic(target, { amount: o.amount, kind: o.kind, dir: o.dir, point: o.point || target.chest(), burn: o.burn, stun: o.stun, freeze: o.freeze, knockdown: o.knockdown, explosive: o.explosive, silent: o.silent, attacker: caster });
+    }
+  }
+
+  // Все живые бойцы, враждебные команде team.
+  foesOfTeam(team) { return this.battle.combatants().filter((c) => c.team !== team); }
+
   // ===== Каст игрока =====
   playerCast(id, lvl, glyph) {
     const B = this.battle, P = this.player, S = SPELLS[id], L = S.lv[lvl - 1];
@@ -97,6 +111,8 @@ export class Spells {
     P.castColor.copy(col);
     P.castGlow = 1;
     const hand = this.playerHand();
+    const foes = B.hostilesOf(P);
+    const corpses = B.enemies.filter((e) => e.dead);
     switch (id) {
       case 'blink': {
         const dirMap = { arrow_up: [0, 1], arrow_down: [0, -1], arrow_left: [-1, 0], arrow_right: [1, 0] };
@@ -105,9 +121,11 @@ export class Spells {
         const dir = f.multiplyScalar(dy).add(r.multiplyScalar(dx)).normalize();
         const start = P.pos.clone();
         let end = start.clone().addScaledVector(dir, L.dist);
-        const er = Math.hypot(end.x, end.z), lim = ARENA_R - 0.6;
+        const lim = ARENA_R - 0.6;
+        const er = Math.hypot(end.x, end.z);
         if (er > lim) end.multiplyScalar(lim / er);
-        // не застревать в противнике
+        // стены лабиринта останавливают рывок
+        if (B.hazards) end = B.hazards.pathClear(start, end, 0.5);
         for (const e of B.enemies) {
           if (e.dead) continue;
           const d = Math.hypot(end.x - e.pos.x, end.z - e.pos.z);
@@ -115,18 +133,16 @@ export class Spells {
         }
         const er2 = Math.hypot(end.x, end.z);
         if (er2 > lim) end.multiplyScalar(lim / er2);
-        // след из частиц
+        if (B.hazards) B.hazards.collide(end, 0.4);
         for (let i = 0; i <= 14; i++) {
           const p = start.clone().lerp(end, i / 14); p.y = 1 + Math.random() * 0.8;
           this.fx.add.add({ pos: p, vel: V((Math.random() - 0.5) * 0.5, Math.random() * 0.5, (Math.random() - 0.5) * 0.5), color: [0.4, 0.8, 1], size: 0.25, life: 0.5 + Math.random() * 0.3 });
         }
-        P.pos.copy(end);
+        P.pos.copy(end); P.pos.y = 0;
         P.invuln = Math.max(P.invuln, 0.35);
         P.fovKick = 14;
         B.sound.blink();
-        // удар в спину?
-        for (const e of B.enemies) {
-          if (e.dead) continue;
+        for (const e of foes) {
           const toP = V(P.pos.x - e.pos.x, 0, P.pos.z - e.pos.z).normalize();
           const dot = Math.sin(e.ch.facing) * toP.x + Math.cos(e.ch.facing) * toP.z;
           if (dot < -0.3 && Math.hypot(P.pos.x - e.pos.x, P.pos.z - e.pos.z) < 4) { P.backstabT = 1.6; P.target = e; B.ui.flash('rgba(120,200,255,0.25)'); }
@@ -142,16 +158,14 @@ export class Spells {
         break;
       }
       case 'fireball': {
-        const aim = this.playerAim();
-        const dir = aim.clone().sub(hand).normalize();
-        this.spawnProjectile({ kind: 'fire', team: 0, pos: hand, dir, speed: 19, dmg: L.dmg, burn: L.burn, radius: L.radius, color: S.color, home: P.target, size: 0.22 });
+        const dir = this.playerAim().sub(hand).normalize();
+        this.spawnProjectile({ kind: 'fire', team: 0, owner: P, pos: hand, dir, speed: 19, dmg: L.dmg, burn: L.burn, radius: L.radius, color: S.color, homeTarget: P.target, turn: 4, size: 0.22 });
         B.sound.fireCast();
         break;
       }
       case 'frost': {
-        const aim = this.playerAim();
-        const dir = aim.clone().sub(hand).normalize();
-        this.spawnProjectile({ kind: 'frost', team: 0, pos: hand, dir, speed: 17, dmg: L.dmg, freeze: L.freeze, color: S.color, home: P.target, size: 0.17 });
+        const dir = this.playerAim().sub(hand).normalize();
+        this.spawnProjectile({ kind: 'frost', team: 0, owner: P, pos: hand, dir, speed: 17, dmg: L.dmg, freeze: L.freeze, color: S.color, homeTarget: P.target, turn: 4, size: 0.17 });
         B.sound.ice();
         break;
       }
@@ -161,7 +175,7 @@ export class Spells {
         if (!cur) { B.sound.zap(); this.boltVisual(hand, this.playerAim(), S.color); break; }
         targets.push(cur);
         for (let c = 0; c < L.chain; c++) {
-          const next = B.enemies.filter((e) => !e.dead && !targets.includes(e)).sort((a, b) => a.pos.distanceTo(cur.pos) - b.pos.distanceTo(cur.pos))[0];
+          const next = foes.filter((e) => !targets.includes(e)).sort((a, b) => a.pos.distanceTo(cur.pos) - b.pos.distanceTo(cur.pos))[0];
           if (!next || next.pos.distanceTo(cur.pos) > 8) break;
           targets.push(next); cur = next;
         }
@@ -169,7 +183,7 @@ export class Spells {
         targets.forEach((e, i) => {
           const to = e.chest();
           this.boltVisual(from, to, S.color);
-          B.damageEnemyMagic(e, { amount: L.dmg * (i ? 0.7 : 1), kind: 'lightning', dir: to.clone().sub(from).normalize(), stun: L.stun, point: to });
+          this.hit(e, P, { amount: L.dmg * (i ? 0.7 : 1), kind: 'lightning', dir: to.clone().sub(from).normalize(), stun: L.stun, point: to });
           from = to;
         });
         B.sound.zap();
@@ -180,8 +194,9 @@ export class Spells {
       case 'push': {
         const f = P.forward(new THREE.Vector3());
         this.wave(P.pos.clone().addScaledVector(f, 0.8), f, S.color);
-        for (const e of B.enemies) {
+        for (const e of [...foes, ...corpses]) {
           const d = V(e.pos.x - P.pos.x, 0, e.pos.z - P.pos.z);
+          if (e.dead && e.ch.ragdoll) d.set(e.ch.ragdoll.p[J.PELVIS].x - P.pos.x, 0, e.ch.ragdoll.p[J.PELVIS].z - P.pos.z);
           const dist = d.length();
           if (dist > 6.5) continue;
           d.normalize();
@@ -189,7 +204,12 @@ export class Spells {
           const fall = 1 - dist / 7;
           const vel = d.clone().multiplyScalar(L.force * (0.6 + fall * 0.6)).add(V(0, 3 + fall * 3, 0));
           if (e.dead) { if (e.ch.ragdoll) e.ch.ragdoll.impulseAll(vel, 1); continue; }
-          B.damageEnemyMagic(e, { amount: L.dmg, kind: 'force', dir: d, knockdown: vel, point: e.chest() });
+          this.hit(e, P, { amount: L.dmg, kind: 'force', dir: d, knockdown: vel, point: e.chest() });
+        }
+        for (const b of B.beasts) {
+          if (b.dead) continue;
+          const d = V(b.pos.x - P.pos.x, 0, b.pos.z - P.pos.z);
+          if (d.length() < 6 && d.normalize().dot(f) > Math.cos(0.9)) { b.vel.addScaledVector(d, L.force * 0.6); b.hurt(L.dmg, d); }
         }
         B.sound.push();
         B.shake(0.4);
@@ -198,7 +218,7 @@ export class Spells {
       case 'drain': {
         const t = P.target && !P.target.dead ? P.target : null;
         if (!t) { B.sound.fizzle(); break; }
-        this.beams.push({ from: t, toPlayer: true, t: 0, dur: 1.3, total: L.total, done: 0, color: S.color });
+        this.beams.push({ caster: P, target: t, t: 0, dur: 1.3, total: L.total, color: S.color });
         B.sound.drain();
         break;
       }
@@ -206,64 +226,73 @@ export class Spells {
         const t = P.target && !P.target.dead ? P.target : null;
         const pos = t ? t.pos.clone() : P.pos.clone().addScaledVector(P.forward(new THREE.Vector3()), 6);
         pos.y = 0;
-        this.spawnMeteor(pos, 0, L.dmg, L.radius, 1.0, t);
+        this.spawnMeteor(pos, 0, L.dmg, L.radius, 1.0, t, P);
         break;
       }
     }
   }
 
-  // ===== Каст врага =====
+  // ===== Каст ИИ-бойца (врага или союзника) =====
   enemyCast(e, id, lvl) {
-    const B = this.battle, P = this.player, S = SPELLS[id], L = S.lv[Math.min(3, lvl) - 1];
+    const B = this.battle, S = SPELLS[id], L = S.lv[Math.min(3, lvl) - 1];
+    const T = e.foe && !e.foe.dead ? e.foe : null;
     const hand = e.ch.pose[J.LHA].clone();
-    const aim = V(P.pos.x, EYE - 0.35, P.pos.z);
+    const scale = 0.55;
+    if (!T && id !== 'shield') return;
+    const aim = T ? T.chest().add(V(0, 0.1, 0)) : null;
     switch (id) {
       case 'fireball': {
         const dir = aim.clone().sub(hand).normalize();
-        this.spawnProjectile({ kind: 'fire', team: 1, pos: hand, dir, speed: 13, dmg: L.dmg * 0.55, burn: L.burn * 0.5, radius: L.radius * 0.8, color: S.color, homePlayer: true, size: 0.22, owner: e });
+        this.spawnProjectile({ kind: 'fire', team: e.team, pos: hand, dir, speed: 13, dmg: L.dmg * scale, burn: L.burn * 0.5, radius: L.radius * 0.8, color: S.color, homeTarget: T, turn: 1.3, size: 0.22, owner: e });
         B.sound.fireCast();
         break;
       }
       case 'frost': {
         const dir = aim.clone().sub(hand).normalize();
-        this.spawnProjectile({ kind: 'frost', team: 1, pos: hand, dir, speed: 13, dmg: L.dmg * 0.6, freeze: 2.2, color: S.color, homePlayer: true, size: 0.17, owner: e });
+        this.spawnProjectile({ kind: 'frost', team: e.team, pos: hand, dir, speed: 13, dmg: L.dmg * 0.6, freeze: 2.0, color: S.color, homeTarget: T, turn: 1.3, size: 0.17, owner: e });
         B.sound.ice();
         break;
       }
       case 'lightning': {
-        const to = aim.clone();
-        this.boltVisual(hand, to, S.color);
+        if (B.hazards && B.hazards.losBlocked(e.pos, T.pos)) break;
+        this.boltVisual(hand, aim, S.color);
         B.sound.zap();
-        if (e.distToPlayer() < 16) B.damagePlayer({ amount: L.dmg * 0.55, dir: to.clone().sub(hand).setY(0).normalize(), source: e, kind: 'lightning', blockable: false, stun: 0.25 });
+        if (e.distTo(T) < 16) this.hit(T, e, { amount: L.dmg * scale, kind: 'lightning', dir: aim.clone().sub(hand), stun: L.stun * 0.7, stunP: 0.25 });
         break;
       }
       case 'push': {
-        const d = e.toPlayer();
-        const dist = d.length();
-        d.normalize();
+        const d = e.toward(T).clone().normalize();
         this.wave(e.pos.clone().addScaledVector(d, 0.8), d, S.color);
         B.sound.push();
-        if (dist < 6) B.damagePlayer({ amount: L.dmg * 0.7, dir: d, source: e, kind: 'force', blockable: false, knock: L.force * 0.9, stagger: 0.45 });
+        for (const c of this.foesOfTeam(e.team)) {
+          const dd = V(c.pos.x - e.pos.x, 0, c.pos.z - e.pos.z);
+          const dist = dd.length();
+          if (dist > 6) continue;
+          dd.normalize();
+          if (dd.dot(d) < Math.cos(0.9)) continue;
+          if (c.isPlayer) this.hit(c, e, { amount: L.dmg * 0.7, kind: 'force', dir: dd, knock: L.force * 0.9, stagger: 0.45 });
+          else this.hit(c, e, { amount: L.dmg * 0.7, kind: 'force', dir: dd, knockdown: dd.clone().multiplyScalar(L.force * 0.8).add(V(0, 3.5, 0)) });
+        }
         break;
       }
       case 'blink': {
         const from = e.pos.clone();
         let to;
-        const r = Math.random();
-        const pf = P.forward(new THREE.Vector3()), pr = P.right(new THREE.Vector3());
-        if (e.canFight && r < 0.7) to = P.pos.clone().addScaledVector(pf, -1.4).addScaledVector(pr, (Math.random() - 0.5) * 2); // за спину
+        const tf = T.isPlayer ? T.forward(new THREE.Vector3()) : V(Math.sin(T.ch.facing), 0, Math.cos(T.ch.facing));
+        const tr = V(tf.z, 0, -tf.x);
+        if (e.canFight && Math.random() < 0.7) to = T.pos.clone().addScaledVector(tf, -1.4).addScaledVector(tr, (Math.random() - 0.5) * 2);
         else to = V((Math.random() - 0.5) * 18, 0, (Math.random() - 0.5) * 18);
         const rr = Math.hypot(to.x, to.z), lim = ARENA_R - 1;
         if (rr > lim) to.multiplyScalar(lim / rr);
         to.y = 0;
+        if (B.hazards) { B.hazards.collide(to, 0.4); if (!B.hazards.isFree(to.x, to.z) && B.hazards.inAcid && B.hazards.inAcid(to.x, to.z)) to.copy(from); }
         for (let i = 0; i <= 10; i++) {
           const p = from.clone().lerp(to, i / 10); p.y = 1 + Math.random() * 0.6;
           this.fx.add.add({ pos: p, vel: V(0, 0.4, 0), color: [0.4, 0.8, 1], size: 0.25, life: 0.5 });
         }
         e.pos.copy(to);
-        e.ch.root.copy(to);
         B.sound.blink();
-        if (e.canFight) { e.thinkT = 0; }
+        if (e.canFight) e.thinkT = 0;
         break;
       }
       case 'shield': {
@@ -272,16 +301,16 @@ export class Spells {
         break;
       }
       case 'drain': {
-        if (e.distToPlayer() > 11) break;
-        this.beams.push({ from: e, toPlayer: false, t: 0, dur: 1.3, total: L.total * 0.6, done: 0, color: S.color });
+        if (e.distTo(T) > 11) break;
+        this.beams.push({ caster: e, target: T, t: 0, dur: 1.3, total: L.total * 0.6, color: S.color });
         B.sound.drain();
         break;
       }
       case 'meteor': {
         const m = this.markers.find((mk) => mk.owner === e);
-        const pos = m ? m.pos.clone() : P.pos.clone();
+        const pos = m ? m.pos.clone() : T.pos.clone();
         this.cancelMarkers(e, true);
-        this.spawnMeteor(pos, 1, L.dmg * 0.45, L.radius * 0.9, 0.55, null, e);
+        this.spawnMeteor(pos, e.team, L.dmg * 0.45, L.radius * 0.9, 0.55, null, e);
         break;
       }
     }
@@ -306,81 +335,76 @@ export class Spells {
     const keep = [];
     for (const pr of this.projectiles) {
       pr.life += dt;
-      // самонаведение
-      let target = null;
-      if (pr.home && !pr.home.dead) target = pr.home.chest();
-      if (pr.homePlayer && !P.dead) target = V(P.pos.x, EYE - 0.4, P.pos.z);
-      if (target) {
-        const want = target.clone().sub(pr.pos).normalize().multiplyScalar(pr.speed);
-        const turn = pr.team === 0 ? 4 : 1.3;
-        pr.vel.lerp(want, Math.min(1, dt * turn)).setLength(pr.speed);
+      const ht = pr.homeTarget;
+      if (ht && !ht.dead) {
+        const want = ht.chest().sub(pr.pos).normalize().multiplyScalar(pr.speed);
+        pr.vel.lerp(want, Math.min(1, dt * (pr.turn || 1.3))).setLength(pr.speed);
       }
       pr.pos.addScaledVector(pr.vel, dt);
       pr.mesh.position.copy(pr.pos);
       pr.glow.scale.setScalar(pr.size * (1 + Math.sin(pr.life * 40) * 0.12));
-      // след
       if (pr.kind === 'fire') this.fx.fire(pr.pos, 1.1, 2);
       else this.fx.add.add({ pos: pr.pos, vel: V((Math.random() - 0.5) * 0.4, (Math.random() - 0.5) * 0.4, (Math.random() - 0.5) * 0.4), color: [0.6, 0.95, 1], size: 0.14, life: 0.4 });
-      let hit = false, hitEnemy = null;
-      if (pr.team === 0) {
-        for (const e of B.enemies) {
-          if (e.dead) continue;
-          const c = e.chest();
-          if (c.distanceTo(pr.pos) < 0.45 * e.ch.scale + pr.size) { hit = true; hitEnemy = e; break; }
-        }
-      } else if (!P.dead) {
-        const d = Math.hypot(pr.pos.x - P.pos.x, pr.pos.z - P.pos.z);
-        if (d < 0.55 && pr.pos.y < EYE + 0.3) {
-          // отражение щитом
-          if (P.shield && P.shield.reflect) {
-            pr.team = 0; pr.homePlayer = false; pr.home = pr.owner && !pr.owner.dead ? pr.owner : P.target;
-            pr.vel.multiplyScalar(-1.3); pr.speed *= 1.3;
-            B.sound.shieldHit(); B.ui.floatText(pr.pos, 'ОТРАЖЕНО', '#9fe8ff');
-            keep.push(pr); continue;
+      let hit = false, hitTarget = null;
+      for (const c of B.combatants()) {
+        if (c.team === pr.team) continue;
+        if (c.isPlayer) {
+          const d = Math.hypot(pr.pos.x - c.pos.x, pr.pos.z - c.pos.z);
+          if (d < 0.55 && pr.pos.y < EYE + 0.3) {
+            if (c.shield && c.shield.reflect) {
+              pr.team = 0; pr.homeTarget = pr.owner && !pr.owner.dead ? pr.owner : c.target; pr.turn = 4;
+              pr.vel.multiplyScalar(-1.3); pr.speed *= 1.3; pr.owner = c;
+              B.sound.shieldHit(); B.ui.floatText(pr.pos, 'ОТРАЖЕНО', '#9fe8ff');
+              hit = 'reflect';
+              break;
+            }
+            hit = true; hitTarget = c; break;
           }
-          hit = true;
-        }
+        } else if (c.chest().distanceTo(pr.pos) < 0.45 * c.ch.scale + pr.size) { hit = true; hitTarget = c; break; }
       }
+      if (hit === 'reflect') { keep.push(pr); continue; }
       const r = Math.hypot(pr.pos.x, pr.pos.z);
       if (pr.pos.y < 0.05 || r > ARENA_R || pr.life > 4) hit = true;
-      if (hit) { this.impact(pr, hitEnemy); pr.mesh.removeFromParent(); continue; }
+      if (B.hazards && B.hazards.pointInWall(pr.pos, pr.size)) hit = true;
+      if (hit) { this.impact(pr, hitTarget); pr.mesh.removeFromParent(); continue; }
       keep.push(pr);
     }
     this.projectiles = keep;
   }
 
-  impact(pr, hitEnemy) {
+  impact(pr, hitTarget) {
     const B = this.battle, P = this.player;
+    const caster = pr.owner || null;
     if (pr.kind === 'fire') {
       this.fx.explosion(pr.pos, pr.radius);
       B.sound.explode(pr.radius / 2.5);
       B.shake(Math.max(0.25, 0.9 - P.pos.distanceTo(pr.pos) * 0.06));
-      if (pr.team === 0) {
-        for (const e of B.enemies) {
-          const d = e.chest().distanceTo(pr.pos);
-          if (d > pr.radius + 0.4) continue;
-          const fall = 1 - Math.min(1, d / (pr.radius + 0.4));
-          const dir = e.chest().sub(pr.pos).setY(0).normalize();
+      for (const c of this.foesOfTeam(pr.team)) {
+        const cp = c.chest();
+        const d = cp.distanceTo(pr.pos);
+        if (d > pr.radius + 0.4) continue;
+        const fall = 1 - Math.min(1, d / (pr.radius + 0.4));
+        const dir = cp.sub(pr.pos).setY(0).normalize();
+        if (c.isPlayer) {
+          this.hit(c, caster, { amount: pr.dmg * (1 - (1 - fall) * 0.5), kind: 'fire', dir, blockable: true, knock: 4 });
+        } else {
           const vel = dir.clone().multiplyScalar(5 + fall * 8).add(V(0, 4 + fall * 4, 0));
-          if (e.dead) { if (e.ch.ragdoll) e.ch.ragdoll.impulseAll(vel, 1); continue; }
-          B.damageEnemyMagic(e, { amount: pr.dmg * (e === hitEnemy ? 1 : 0.5 + fall * 0.5), kind: 'fire', dir, burn: pr.burn, knockdown: fall > 0.35 || e === hitEnemy ? vel : null, point: pr.pos.clone(), explosive: true });
-        }
-      } else {
-        const d = Math.hypot(pr.pos.x - P.pos.x, pr.pos.z - P.pos.z);
-        if (d < pr.radius) {
-          const dir = V(P.pos.x - pr.pos.x, 0, P.pos.z - pr.pos.z).normalize();
-          B.damagePlayer({ amount: pr.dmg * (1 - d / pr.radius * 0.5), dir, source: pr.owner, kind: 'fire', blockable: true, knock: 4, burn: pr.burn });
+          this.hit(c, caster, { amount: pr.dmg * (c === hitTarget ? 1 : 0.5 + fall * 0.5), kind: 'fire', dir, burn: pr.burn, knockdown: fall > 0.35 || c === hitTarget ? vel : null, point: pr.pos.clone(), explosive: true });
         }
       }
+      for (const e of B.enemies) {
+        if (!e.dead || !e.ch.ragdoll) continue;
+        const d = e.ch.ragdoll.p[J.PELVIS].distanceTo(pr.pos);
+        if (d < pr.radius + 0.5) e.ch.ragdoll.impulseAll(e.ch.ragdoll.p[J.PELVIS].clone().sub(pr.pos).setY(0).normalize().multiplyScalar(6).add(V(0, 5, 0)), 1);
+      }
+      for (const b of B.beasts) if (!b.dead && b.chest().distanceTo(pr.pos) < pr.radius + 0.5) b.hurt(pr.dmg * 0.6, b.chest().sub(pr.pos).setY(0).normalize());
     } else if (pr.kind === 'frost') {
       this.fx.magicBurst(pr.pos, 0x9ff0ff, 40, 4);
       for (let i = 0; i < 10; i++) this.fx.chunks.add(pr.pos, V((Math.random() - 0.5) * 5, Math.random() * 4, (Math.random() - 0.5) * 5), 0.04 + Math.random() * 0.05, 0xc8f4ff, { life: 3 });
       B.sound.ice();
-      if (pr.team === 0 && hitEnemy) {
-        B.damageEnemyMagic(hitEnemy, { amount: pr.dmg, kind: 'frost', dir: pr.vel.clone().normalize(), freeze: pr.freeze, point: pr.pos.clone() });
-      } else if (pr.team === 1) {
-        const d = Math.hypot(pr.pos.x - P.pos.x, pr.pos.z - P.pos.z);
-        if (d < 1.2) B.damagePlayer({ amount: pr.dmg, dir: pr.vel.clone().setY(0).normalize(), source: pr.owner, kind: 'frost', blockable: true, slow: 2.5 });
+      if (hitTarget) {
+        if (hitTarget.isPlayer) this.hit(hitTarget, caster, { amount: pr.dmg, kind: 'frost', dir: pr.vel.clone(), blockable: true, slow: 2.5 });
+        else this.hit(hitTarget, caster, { amount: pr.dmg, kind: 'frost', dir: pr.vel.clone().normalize(), freeze: pr.freeze, point: pr.pos.clone() });
       }
     }
   }
@@ -432,7 +456,7 @@ export class Spells {
     const start = pos.clone().add(V(-8, 22, -6));
     rock.position.copy(start);
     this.scene.add(rock);
-    let marker = this.markers.find((m) => m.owner === owner && owner);
+    let marker = owner && !owner.isPlayer ? this.markers.find((m) => m.owner === owner) : null;
     if (!marker) {
       this.meteorMarker(null, pos, delay);
       marker = this.markers[this.markers.length - 1];
@@ -453,7 +477,7 @@ export class Spells {
     const keep = [];
     for (const m of this.meteors) {
       m.t += dt;
-      if (m.team === 0 && m.target && !m.target.dead && m.t < m.delay * 0.6) { m.pos.x = m.target.pos.x; m.pos.z = m.target.pos.z; if (m.marker) m.marker.mesh.position.set(m.pos.x, 0.03, m.pos.z); }
+      if (m.target && !m.target.dead && m.t < m.delay * 0.6) { m.pos.x = m.target.pos.x; m.pos.z = m.target.pos.z; if (m.marker) m.marker.mesh.position.set(m.pos.x, 0.03, m.pos.z); }
       const k = Math.min(1, m.t / m.delay);
       m.rock.position.lerpVectors(m.start, m.pos, k * k);
       m.rock.rotation.x += dt * 5; m.rock.rotation.y += dt * 3;
@@ -468,20 +492,20 @@ export class Spells {
         B.sound.explode(1.8);
         B.shake(1.2);
         B.hitstop(0.08);
-        if (m.team === 0) {
-          for (const e of B.enemies) {
-            const d = Math.hypot(e.pos.x - p.x, e.pos.z - p.z);
-            if (d > m.radius) continue;
-            const fall = 1 - d / m.radius;
-            const dir = V(e.pos.x - p.x, 0, e.pos.z - p.z).normalize();
-            const vel = dir.clone().multiplyScalar(6 + fall * 10).add(V(0, 6 + fall * 8, 0));
-            if (e.dead) { if (e.ch.ragdoll) e.ch.ragdoll.impulseAll(vel, 1); continue; }
-            B.damageEnemyMagic(e, { amount: m.dmg * (0.4 + fall * 0.6), kind: 'fire', dir, burn: 6, knockdown: vel, point: p, explosive: true });
-          }
-        } else {
-          const d = Math.hypot(P.pos.x - p.x, P.pos.z - p.z);
-          if (d < m.radius) B.damagePlayer({ amount: m.dmg * (1 - d / m.radius * 0.6), dir: V(P.pos.x - p.x, 0, P.pos.z - p.z).normalize(), source: m.owner, kind: 'fire', blockable: false, knock: 8, stagger: 0.6 });
+        for (const c of this.foesOfTeam(m.team)) {
+          const d = Math.hypot(c.pos.x - p.x, c.pos.z - p.z);
+          if (d > m.radius) continue;
+          const fall = 1 - d / m.radius;
+          const dir = V(c.pos.x - p.x, 0, c.pos.z - p.z).normalize();
+          if (c.isPlayer) this.hit(c, m.owner, { amount: m.dmg * (1 - (1 - fall) * 0.6), kind: 'fire', dir, knock: 8, stagger: 0.6 });
+          else this.hit(c, m.owner, { amount: m.dmg * (0.4 + fall * 0.6), kind: 'fire', dir, burn: 6, knockdown: dir.clone().multiplyScalar(6 + fall * 10).add(V(0, 6 + fall * 8, 0)), point: p, explosive: true });
         }
+        for (const e of B.enemies) {
+          if (!e.dead || !e.ch.ragdoll) continue;
+          const pel = e.ch.ragdoll.p[J.PELVIS];
+          if (Math.hypot(pel.x - p.x, pel.z - p.z) < m.radius) e.ch.ragdoll.impulseAll(V(pel.x - p.x, 0, pel.z - p.z).normalize().multiplyScalar(8).add(V(0, 8, 0)), 1);
+        }
+        for (const b of B.beasts) if (!b.dead && Math.hypot(b.pos.x - p.x, b.pos.z - p.z) < m.radius) b.hurt(m.dmg * 0.7, V(b.pos.x - p.x, 0, b.pos.z - p.z).normalize());
         continue;
       }
       keep.push(m);
@@ -491,28 +515,18 @@ export class Spells {
 
   // ===== Луч вампиризма =====
   updateBeams(dt) {
-    const B = this.battle, P = this.player;
     const keep = [];
     for (const b of this.beams) {
       b.t += dt;
-      const e = b.from;
-      if (e.dead || P.dead) continue;
-      if (!b.toPlayer && (e.state === 'stagger' || e.state === 'knock' || e.status.stun > 0 || e.status.frozen > 0)) continue;
-      const dist = e.distToPlayer();
-      if (dist > 13) continue;
+      const c = b.caster, t = b.target;
+      if (c.dead || t.dead) continue;
+      if (!c.isPlayer && (c.state === 'stagger' || c.state === 'knock' || c.status.stun > 0 || c.status.frozen > 0)) continue;
+      if (Math.hypot(c.pos.x - t.pos.x, c.pos.z - t.pos.z) > 13) continue;
       const per = b.total / b.dur * dt;
-      const ep = e.chest();
-      const pp = this.playerHand();
-      if (b.toPlayer) {
-        B.damageEnemyMagic(e, { amount: per, kind: 'drain', dir: V(0, 0, 0), point: ep, silent: true });
-        P.hp = Math.min(P.maxHp, P.hp + per);
-      } else {
-        B.damagePlayer({ amount: per, dir: V(0, 0, 0), source: e, kind: 'drain', blockable: false, silent: true });
-        e.hp = Math.min(e.maxHp, e.hp + per);
-      }
-      // поток кровавых частиц
-      const from = b.toPlayer ? ep : V(P.pos.x, EYE - 0.3, P.pos.z);
-      const to = b.toPlayer ? pp : ep;
+      this.hit(t, c, { amount: per, kind: 'drain', dir: V(0, 0, 0), silent: true });
+      c.hp = Math.min(c.maxHp, c.hp + per);
+      const from = t.isPlayer ? V(t.pos.x, EYE - 0.3, t.pos.z) : t.chest();
+      const to = c.isPlayer ? this.playerHand() : c.chest();
       for (let i = 0; i < 3; i++) {
         const v = to.clone().sub(from).multiplyScalar(2.2).add(V((Math.random() - 0.5) * 1.5, (Math.random() - 0.5) * 1.5, (Math.random() - 0.5) * 1.5));
         this.fx.add.add({ pos: from.clone().add(V((Math.random() - 0.5) * 0.3, (Math.random() - 0.5) * 0.3, (Math.random() - 0.5) * 0.3)), vel: v, color: [1, 0.1, 0.15], color2: [0.4, 0, 0], size: 0.12, life: 0.45 });

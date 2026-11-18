@@ -1,6 +1,6 @@
 // Интерфейс: экраны меню (DOM), HUD, всплывающие числа урона, экранные эффекты.
 import * as THREE from 'three';
-import { WEAPONS, WEAPON_TYPES, ARMOR, ARMOR_SLOTS, SPELLS, SPELL_ORDER, MAGIC_UPGRADES, ARCHETYPES, getFight, rankName } from './data.js';
+import { WEAPONS, WEAPON_TYPES, ARMOR, ARMOR_SLOTS, SPELLS, SPELL_ORDER, MAGIC_UPGRADES, ARCHETYPES, getFight, rankName, ARENAS, ARENA_ORDER, FORMATS, FORMAT_ORDER, RANDOM_BONUS, rewardMult, buildRoster } from './data.js';
 import { glyphSVG, SPELL_GLYPH, recognize, GLYPH_TO_SPELL } from './gesture.js';
 
 const $ = (sel, root = document) => root.querySelector(sel);
@@ -71,7 +71,9 @@ export class UI {
     switch (act) {
       case 'menu': this.menu(); break;
       case 'prefight': if (!G.save.seenTutorial) { this.howto('prefight'); G.save.seenTutorial = true; G.persist(); } else this.prefight(); break;
-      case 'fight': G.startBattle(); break;
+      case 'fight': G.startFromPrefs(); break;
+      case 'pick-arena': G.save.prefs.arena = ds.id; G.persist(); this.prefight(); break;
+      case 'pick-format': G.save.prefs.format = ds.id; G.persist(); this.prefight(); break;
       case 'shop': this.shop(ds.tab || 'weapons'); break;
       case 'grimoire': this.grimoire(); break;
       case 'howto': this.howto(ds.back || 'menu'); break;
@@ -280,36 +282,64 @@ export class UI {
   }
 
   // ----- Перед боем -----
+  enemyCard(e, side) {
+    const A = ARCHETYPES[e.archetype];
+    const w = WEAPONS[A.weapon];
+    const glyphs = A.spells.map((sp) => glyphSVG(SPELL_GLYPH[sp], hex(SPELLS[sp].color), 18)).join('');
+    const hp = Math.round(A.hp * (1 + (e.level - 1) * 0.13) * (e.boss ? 1.35 : 1) * e.groupScale);
+    return `<div class="mini-card ${side} ${e.boss ? 'boss' : ''}">
+      <div class="ti">${e.boss ? '☠ ' : ''}${A.title}</div>
+      <div class="nm">${e.name}</div>
+      <div class="info">${w.name} · ❤ ${hp}</div>
+      ${A.spells.length ? `<div class="glyphs">${glyphs}</div>` : ''}
+    </div>`;
+  }
+
   prefight() {
     const G = this.game, s = G.save;
-    const f = getFight(s.fight);
-    const cards = f.enemies.map((e) => {
-      const A = ARCHETYPES[e.archetype];
-      const w = WEAPONS[A.weapon];
-      const glyphs = A.spells.map((sp) => glyphSVG(SPELL_GLYPH[sp], hex(SPELLS[sp].color), 24)).join('');
-      const hp = Math.round(A.hp * (1 + (e.level - 1) * 0.13) * (e.boss ? 1.35 : 1) * e.groupScale);
-      return `<div class="enemy-card ${e.boss ? 'boss' : ''}">
-        <div class="ti">${e.boss ? '☠ Босс · ' : ''}${A.title}</div>
-        <div class="nm">${e.name}</div>
-        <div class="info">Оружие: ${w.name} <span style="color:var(--dim)">(${WEAPON_TYPES[w.type].name.toLowerCase()})</span><br>Здоровье: ${hp}</div>
-        ${A.spells.length ? `<div class="info">Магия:</div><div class="glyphs">${glyphs}</div>` : '<div class="info" style="color:var(--dim)">Не владеет магией</div>'}
-      </div>`;
-    }).join('');
-    const w = WEAPONS[s.equipped.weapon];
+    const pa = s.prefs.arena || 'colosseum', pf = s.prefs.format || 'duel';
+    const randA = pa === 'random', randF = pf === 'random';
+    const base = getFight(s.fight);
+    const chip = (act, id, icon, name, on, extra = '') => `<button class="chip ${on ? 'on' : ''} ${id === 'random' ? 'rnd' : ''}" data-act="${act}" data-id="${id}">${icon} ${name}${extra}</button>`;
+    const arenaChips = ARENA_ORDER.map((id) => chip('pick-arena', id, ARENAS[id].icon, ARENAS[id].name, pa === id, ARENAS[id].mult > 1 ? ` <small>×${ARENAS[id].mult}</small>` : '')).join('')
+      + chip('pick-arena', 'random', '🎲', 'Случайно', randA, ` <small>+${Math.round(RANDOM_BONUS.arena * 100)}%</small>`);
+    const formatChips = FORMAT_ORDER.map((id) => chip('pick-format', id, FORMATS[id].icon, FORMATS[id].name, pf === id, FORMATS[id].mult > 1 ? ` <small>×${FORMATS[id].mult}</small>` : '')).join('')
+      + chip('pick-format', 'random', '🎲', 'Случайно', randF, ` <small>+${Math.round(RANDOM_BONUS.format * 100)}%</small>`);
+    // ожидаемая награда (для случайного — средний множитель)
+    const avg = (obj, order) => order.reduce((a, k) => a + obj[k].mult, 0) / order.length;
+    const am = randA ? avg(ARENAS, ARENA_ORDER) : ARENAS[pa].mult;
+    const fm = randF ? avg(FORMATS, FORMAT_ORDER) : FORMATS[pf].mult;
+    const bonus = randA && randF ? RANDOM_BONUS.both : randA ? RANDOM_BONUS.arena : randF ? RANDOM_BONUS.format : 0;
+    const mult = am * fm * (1 + bonus);
+    const gold = Math.round(base.gold * mult), xp = Math.round(base.xp * mult);
+    let roster;
+    if (randF) {
+      roster = `<div class="fate">🎲 Состав решит судьба${randA ? ' — как и арену' : ''}.<br><b>+${Math.round(bonus * 100)}% к награде</b></div>`;
+    } else {
+      const r = buildRoster(s.fight, pf);
+      const me = `<div class="mini-card me"><div class="ti">Вы</div><div class="nm">${rankName(s.fightsWon)}</div><div class="info">${WEAPONS[s.equipped.weapon].name}</div></div>`;
+      const allies = r.allies.map((e) => this.enemyCard(e, 'ally')).join('');
+      const foes = r.hostiles.map((e) => this.enemyCard(e, pf === 'ffa' ? 'ffa' : 'foe')).join('');
+      roster = pf === 'ffa'
+        ? `<div class="roster">${me}<div class="vs">☠</div>${foes}</div><div class="note">Каждый сам за себя: противники дерутся и друг с другом.</div>`
+        : `<div class="roster team"><div class="side">${me}${allies}</div><div class="vs">VS</div><div class="side">${foes}</div></div>`;
+    }
+    const aDesc = randA ? 'Арена выпадет случайно.' : ARENAS[pa].desc;
+    const fDesc = randF ? 'Формат выпадет случайно.' : FORMATS[pf].desc;
     this.screen(`
-      <div class="topbar"><button class="btn small" data-act="menu">← Назад</button><h2>Бой №${f.n}</h2><span></span></div>
-      <div class="scroll" style="flex:1; display:flex; flex-direction:column; align-items:center">
-        <div class="row" style="align-items:stretch">
-          <div class="enemy-card"><div class="ti">Вы</div><div class="nm">${rankName(s.fightsWon)}</div>
-            <div class="info">Оружие: ${w.name}<br>Здоровье: ${100 + (s.upgrades.vitality || 0) * 15 + (ARMOR[s.equipped.body]?.hpBonus || 0)}</div>
-            <div class="info">Заклинания:</div><div class="glyphs">${SPELL_ORDER.filter((id) => s.spells[id]).map((id) => glyphSVG(SPELL_GLYPH[id], hex(SPELLS[id].color), 24)).join('')}</div></div>
-          <div class="vs" style="align-self:center">VS</div>
-          ${cards}
-        </div>
-        <div class="res" style="margin-top:8px"><span class="gold">Награда: ⛁ ${f.gold}</span><span class="xp">✦ ${f.xp} опыта</span></div>
-        <button class="btn primary" data-act="fight">Сражаться!</button>
+      <div class="topbar"><button class="btn small" data-act="menu">← Назад</button><h2>Бой №${base.n}${base.enemies.some((e) => e.boss) ? ' · БОСС' : ''}</h2><span></span></div>
+      <div class="scroll" style="flex:1; display:flex; flex-direction:column; align-items:center; gap:6px">
+        <div class="pick-row"><span class="lbl">Арена</span><div class="chips">${arenaChips}</div></div>
+        <div class="pick-desc">${aDesc}</div>
+        <div class="pick-row"><span class="lbl">Формат</span><div class="chips">${formatChips}</div></div>
+        <div class="pick-desc">${fDesc}</div>
+        ${roster}
+      </div>
+      <div class="footbar">
+        <div class="res"><span class="gold">Награда: ⛁ ${randA || randF ? '~' : ''}${gold}</span><span class="xp">✦ ${randA || randF ? '~' : ''}${xp}</span>${bonus ? `<span class="bonus">🎲 +${Math.round(bonus * 100)}%</span>` : ''}</div>
+        <button class="btn primary" data-act="fight">${randA || randF ? '🎲 Испытать судьбу!' : 'Сражаться!'}</button>
       </div>`, 'prefight');
-    G.showMenuScene(f);
+    G.showMenuScene(base, randA ? null : pa);
   }
 
   // ----- Итоги -----
@@ -320,6 +350,7 @@ export class UI {
       <div class="scroll" style="flex:1; display:flex; flex-direction:column; align-items:center">
         <div style="margin:auto 0; display:flex; flex-direction:column; align-items:center">
         <div class="big-result ${r.win ? 'win' : 'lose'}">${r.win ? 'ПОБЕДА' : 'ПОРАЖЕНИЕ'}</div>
+        <div class="note">${ARENAS[r.arena].icon} ${ARENAS[r.arena].name} · ${FORMATS[r.format].icon} ${FORMATS[r.format].name}${r.randArena || r.randFormat ? ' · 🎲 воля судьбы' : ''}</div>
         <div class="results-box">
           <div class="stats-grid">
             <span>Убито <b>${st.kills}</b></span><span>Головы <b>${st.decap}</b></span><span>Конечности <b>${st.dismember}</b></span>
@@ -388,8 +419,12 @@ export class UI {
     document.body.classList.add('in-battle');
     document.body.classList.toggle('lefty', !!this.game.save.settings.lefty);
     $('#countdown').textContent = '';
-    $('#btn-target').style.display = B.enemies.length > 1 ? 'flex' : 'none';
-    $('#enemy-dots').innerHTML = B.enemies.length > 1 ? B.enemies.map(() => '<i></i>').join('') : '';
+    $('#btn-target').style.display = B.hostilesOf(B.player).length > 1 ? 'flex' : 'none';
+    $('#enemy-dots').innerHTML = B.enemies.length > 1 ? B.enemies.map((e) => `<i class="${e.isAlly ? 'ally' : ''}"></i>`).join('') : '';
+    $('#feed').innerHTML = '';
+    const fate = B.opts.randArena || B.opts.randFormat;
+    $('#arena-banner').innerHTML = `${fate ? '<small>🎲 Судьба выбрала</small>' : ''}${ARENAS[B.arenaId].icon} ${ARENAS[B.arenaId].name} · ${FORMATS[B.format].name}`;
+    $('#arena-banner').className = 'show';
     this.shield(false);
     this.runeMode(false, B);
     this.hp.lag = 1; this.hp.ehpLag = 1;
@@ -455,7 +490,7 @@ export class UI {
     } else if (C.v.tvis !== 0) { tEl.style.opacity = 0; C.v.tvis = 0; }
     if (B.enemies.length > 1) {
       const dots = el('#enemy-dots').children;
-      B.enemies.forEach((e, i) => { const cls = (e.dead ? 'dead' : '') + (e === t ? ' cur' : ''); if (dots[i] && dots[i].className !== cls) dots[i].className = cls; });
+      B.enemies.forEach((e, i) => { const cls = (e.isAlly ? 'ally ' : '') + (e.dead ? 'dead' : '') + (e === t ? ' cur' : ''); if (dots[i] && dots[i].className !== cls) dots[i].className = cls; });
     }
     // мана на кнопке руны
     const runeOp = P.mana >= 15 ? '1' : '0.5';
@@ -588,6 +623,17 @@ export class UI {
     this.floats.push({ pos: pos.clone().add(new THREE.Vector3((Math.random() - 0.5) * 0.3, 0.2, 0)), text: String(Math.round(dmg)), color, t: 0, life: 0.85, size: crit ? 30 : 22, vy: 0 });
   }
 
+  killFeed(killer, kc, victim, vc, info) {
+    const host = $('#feed');
+    const icon = info.hazard === 'acid' ? '🧪' : info.hazard === 'spikes' ? '⚙' : info.hazard === 'beast' ? '🐺' : info.kind === 'fire' ? '🔥' : info.kind === 'lightning' ? '⚡' : '⚔';
+    const el = document.createElement('div');
+    el.innerHTML = `<b class="${kc}">${killer}</b> ${icon} <span class="${vc}">${victim}</span>`;
+    host.appendChild(el);
+    while (host.children.length > 4) host.firstElementChild.remove();
+    setTimeout(() => el.classList.add('out'), 3500);
+    setTimeout(() => el.remove(), 4200);
+  }
+
   updateFloats(rdt) {
     this.floats = this.floats.filter((f) => (f.t += rdt) < f.life);
   }
@@ -595,9 +641,31 @@ export class UI {
   render2d(camera) {
     const g = this.g2, d = this.dpr;
     g.clearRect(0, 0, this.fx2d.width, this.fx2d.height);
-    if (!this.floats.length) return;
     const W = window.innerWidth, H = window.innerHeight;
     const v = new THREE.Vector3();
+    // полоски здоровья над головами (в групповых боях)
+    const B = this.game.battle;
+    if (B && !B.over && B.enemies.length > 1 && !B.runeMode) {
+      for (const e of B.enemies) {
+        if (e.dead || !e.ch.group.visible) continue;
+        v.copy(e.ch.pose[0]).y += 0.42 * e.ch.scale;
+        v.project(camera);
+        if (v.z > 1 || Math.abs(v.x) > 1.1 || Math.abs(v.y) > 1.1) continue;
+        const x = (v.x + 1) / 2 * W, y = (1 - v.y) / 2 * H;
+        const bw = 46, bh = 5;
+        const k = Math.max(0, e.hp / e.maxHp);
+        g.fillStyle = 'rgba(0,0,0,0.7)';
+        g.fillRect((x - bw / 2 - 1) * d, (y - 1) * d, (bw + 2) * d, (bh + 2) * d);
+        g.fillStyle = e.isAlly ? '#4a8aff' : (B.format === 'ffa' ? '#e07a20' : '#e03030');
+        g.fillRect((x - bw / 2) * d, y * d, bw * k * d, bh * d);
+        if (e === B.player.target) { g.strokeStyle = '#ffd27a'; g.lineWidth = 1.5 * d; g.strokeRect((x - bw / 2 - 2) * d, (y - 2) * d, (bw + 4) * d, (bh + 4) * d); }
+        if (e.isAlly) {
+          g.font = `700 ${10 * d}px -apple-system, sans-serif`; g.textAlign = 'center';
+          g.fillStyle = '#9ec0ff'; g.fillText(e.name, x * d, (y - 4) * d);
+        }
+      }
+    }
+    if (!this.floats.length) return;
     g.textAlign = 'center';
     g.lineJoin = 'round';
     for (const f of this.floats) {

@@ -8,7 +8,8 @@ import { Input } from './input.js';
 import { Battle } from './battle.js';
 import { Character } from './character.js';
 import { loadSave, writeSave, resetSave } from './save.js';
-import { WEAPONS, ARMOR, SPELLS, MAGIC_UPGRADES, ARCHETYPES, getFight } from './data.js';
+import { WEAPONS, ARMOR, SPELLS, MAGIC_UPGRADES, ARCHETYPES, getFight, ARENAS, ARENA_ORDER, FORMATS, FORMAT_ORDER, rewardMult } from './data.js';
+import { Hazards } from './hazards.js';
 import { SPELL_GLYPH } from './gesture.js';
 
 class Game {
@@ -126,9 +127,21 @@ class Game {
   }
 
   // ===== Сцена меню =====
-  showMenuScene(fight = null) {
+  // Превью арены в меню (без игровой логики).
+  previewArena(id) {
+    if (!id || id === 'random') id = this.previewId || 'colosseum';
+    this.arena.setVariant(id);
+    if (this.preview && this.previewId === id) return;
+    if (this.preview) this.preview.dispose();
+    this.fx.clear();
+    this.preview = new Hazards({ scene: this.scene, fx: this.fx, sound: this.sound, battle: null }, id, this.save.fight);
+    this.previewId = id;
+  }
+
+  showMenuScene(fight = null, arenaId = undefined) {
     for (const c of this.menuChars) c.dispose();
     this.menuChars = [];
+    this.previewArena(arenaId === undefined ? this.save.prefs.arena : arenaId);
     const f = fight || getFight(this.save.fight);
     f.enemies.forEach((e, i) => {
       const A = ARCHETYPES[e.archetype];
@@ -149,6 +162,7 @@ class Game {
     this.camera.position.set(Math.sin(ang) * r, 1.9 + Math.sin(t * 0.3) * 0.2, Math.cos(ang) * r);
     this.camera.lookAt(0, 1.2, 0);
     if (this.camera.fov !== 55) { this.camera.fov = 55; this.camera.updateProjectionMatrix(); this.resize(); }
+    if (this.preview) this.preview.update(rdt);
     for (const ch of this.menuChars) {
       ch.anim.look = this.camera.position.clone();
       // насмешливая поза — поднимает оружие
@@ -160,13 +174,27 @@ class Game {
   }
 
   // ===== Бой =====
-  startBattle() {
+  startFromPrefs() {
+    const p = this.save.prefs;
+    const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+    const randArena = p.arena === 'random', randFormat = p.format === 'random';
+    this.startBattle({
+      arena: randArena ? pick(ARENA_ORDER) : (p.arena || 'colosseum'),
+      format: randFormat ? pick(FORMAT_ORDER) : (p.format || 'duel'),
+      randArena, randFormat
+    });
+  }
+
+  startBattle(opts = this.lastOpts || { arena: 'colosseum', format: 'duel' }) {
     for (const c of this.menuChars) c.dispose();
     this.menuChars = [];
+    if (this.preview) { this.preview.dispose(); this.preview = null; this.previewId = null; }
     if (this.battle) this.battle.dispose();
+    this.lastOpts = opts;
+    this.arena.setVariant(opts.arena);
     this.camera.fov = 72; this.camera.updateProjectionMatrix(); this.resize();
     this.input.lefty = !!this.save.settings.lefty;
-    this.battle = new Battle(this, this.save.fight);
+    this.battle = new Battle(this, this.save.fight, opts);
     this.input.setEnabled(true);
     this.paused = false;
     this.frameTimes = [];
@@ -199,9 +227,15 @@ class Game {
     const st = result.stats;
     const lines = [];
     let gold = 0, xp = 0;
+    const rm = rewardMult(result.arena, result.format, result.randArena, result.randFormat);
     if (result.win) {
-      gold = f.gold; xp = f.xp;
+      gold = Math.round(f.gold * rm.mult); xp = Math.round(f.xp * rm.mult);
       lines.push(['Награда за бой', `⛁ ${f.gold} · ✦ ${f.xp}`]);
+      if (ARENAS[result.arena].mult !== 1) lines.push([`Арена «${ARENAS[result.arena].name}»`, `×${ARENAS[result.arena].mult}`]);
+      if (FORMATS[result.format].mult !== 1) lines.push([`Формат «${FORMATS[result.format].name}»`, `×${FORMATS[result.format].mult}`]);
+      if (rm.bonus) lines.push(['🎲 Воля судьбы', `+${Math.round(rm.bonus * 100)}%`]);
+      if (st.envKills) { gold += st.envKills * 20; lines.push([`Убийства ловушками ×${st.envKills}`, `⛁ +${st.envKills * 20}`]); }
+      if (st.beasts) { gold += st.beasts * 25; xp += st.beasts * 10; lines.push([`Убито зверей ×${st.beasts}`, `⛁ +${st.beasts * 25}`]); }
       if (st.decap) { gold += st.decap * 15; lines.push([`Обезглавливания ×${st.decap}`, `⛁ +${st.decap * 15}`]); }
       if (st.dismember) { gold += st.dismember * 8; lines.push([`Расчленения ×${st.dismember}`, `⛁ +${st.dismember * 8}`]); }
       if (st.gibbed) { gold += st.gibbed * 12; lines.push([`Разорваны в клочья ×${st.gibbed}`, `⛁ +${st.gibbed * 12}`]); }
@@ -229,7 +263,7 @@ class Game {
   leaveBattle(to) {
     if (this.battle) { this.battle.dispose(); this.battle = null; }
     this.ui.battleEnd();
-    if (to === 'retry') { this.startBattle(); return; }
+    if (to === 'retry') { this.startBattle(this.lastOpts); return; }
     if (to === 'prefight') this.ui.prefight();
     else this.ui.menu();
   }
