@@ -72,7 +72,7 @@ button { font: inherit; color: inherit; touch-action: manipulation; }
 .bar.ehp .fill { background: linear-gradient(#c02028, #5a0408); }
 .bar.ehp .eshield { position: absolute; inset: 0; background: rgba(120, 210, 255, 0.55); transform-origin: left; }
 #target .tstatus { font-size: 11px; color: #9fd8ff; height: 14px; text-shadow: 0 1px 2px #000; }
-#enemy-dots { position: absolute; top: calc(48px + var(--st)); left: 50%; transform: translateX(-50%); display: flex; gap: 6px; }
+#enemy-dots { position: absolute; top: calc(66px + var(--st)); left: 50%; transform: translateX(-50%); display: flex; gap: 6px; }
 #enemy-dots i { width: 8px; height: 8px; border-radius: 50%; background: #c02028; display: block; box-shadow: 0 0 4px #000; }
 #enemy-dots i.dead { background: #333; }
 #enemy-dots i.cur { outline: 2px solid var(--gold); }
@@ -91,7 +91,10 @@ button { font: inherit; color: inherit; touch-action: manipulation; }
 #btn-rune.active { background: rgba(30,70,140,0.8); color: #fff; }
 #btn-rune .mana-ring { position: absolute; inset: -6px; border-radius: 50%; border: 3px solid transparent; border-top-color: #5ab8ff; opacity: 0.0; }
 #btn-dash { right: calc(116px + var(--sr)); bottom: calc(22px + var(--sb)); width: 58px; height: 58px; font-size: 28px; }
-#crosshair { position: absolute; left: 50%; top: 50%; width: 4px; height: 4px; margin: -2px; border-radius: 50%; background: rgba(255,240,210,0.55); box-shadow: 0 0 3px #000; }
+#crosshair { position: absolute; left: 50%; top: 50%; width: 18px; height: 18px; margin: -9px; border-radius: 50%; border: 1.5px solid rgba(255,240,210,0.45); box-shadow: 0 0 3px rgba(0,0,0,0.6); transition: border-color 0.12s, transform 0.12s; }
+#crosshair::after { content: ''; position: absolute; left: 50%; top: 50%; width: 3px; height: 3px; margin: -1.5px; border-radius: 50%; background: rgba(255,240,210,0.8); }
+#crosshair.hot { border-color: #ff3a2a; transform: scale(0.8); }
+#crosshair.hot::after { background: #ff3a2a; }
 #combo { position: absolute; right: calc(22px + var(--sr)); top: 30%; font-family: var(--title); font-size: 28px; color: var(--gold2); text-shadow: 0 2px 6px #000; opacity: 0; transition: opacity 0.3s; }
 #combo small { display: block; font-size: 12px; color: var(--dim); }
 #center-text { position: absolute; left: 0; right: 0; top: 24%; text-align: center; font-family: var(--title); font-size: 34px; letter-spacing: 3px; color: #fff; text-shadow: 0 0 12px rgba(255,0,0,0.8), 0 3px 4px #000; opacity: 0; }

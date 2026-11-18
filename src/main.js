@@ -325,7 +325,7 @@ class Game {
   setSetting(key, val) {
     const s = this.save.settings;
     let v = val;
-    if (val === 'true') v = true; else if (val === 'false') v = false; else if (/^\d+$/.test(val)) v = Number(val);
+    if (val === 'true') v = true; else if (val === 'false') v = false; else if (/^\d+(\.\d+)?$/.test(val)) v = Number(val);
     s[key] = v;
     if (key === 'sound') this.sound.setEnabled(v);
     if (key === 'haptics') { this.haptics.enabled = v; if (v) this.haptics.pulse(1); }

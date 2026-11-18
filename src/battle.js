@@ -94,11 +94,7 @@ export class Battle {
     this.player.pos.copy(lay.player);
     const toward = this.format === 'ffa' ? V(0, 0, 0) : hostCenter;
     this.player.yaw = Math.atan2(-(toward.x - lay.player.x), -(toward.z - lay.player.z));
-    this.player.pickTarget();
-    if (this.player.target && this.hazards.walls.length && this.hazards.losBlocked(lay.player, this.player.target.pos)) {
-      const d = this.hazards.navLookAhead(lay.player, this.player.target.pos, this.player.target, 6);
-      if (d) this.player.yaw = Math.atan2(-d.x, -d.z);
-    }
+    this.player.pitch = -0.06;
     this.feed = [];
     this.spells = new Spells(this);
     this.countdown = 2.4;
@@ -237,7 +233,7 @@ export class Battle {
         case 'rune': this.setRuneMode(!this.runeMode); break;
         case 'runeCast': this.castRune(ev.result); break;
         case 'quickcast': this.quickCast(ev.spell, ev.glyph); break;
-        case 'target': P.pickTarget(true); this.sound.click(); break;
+        case 'target': P.quickTurn(); this.sound.click(); break;
         case 'pause': this.game.pause(); break;
       }
     }
@@ -411,6 +407,7 @@ export class Battle {
       } else {
         P.recoil(point);
         this.ui.floatText(e.chest(), 'БЛОК', '#cccccc');
+        e.riposte();
       }
       e.vel.addScaledVector(toP, -1.5);
       this.hitstop(0.05);
@@ -458,6 +455,7 @@ export class Battle {
       this.combo++; this.comboT = 2.5;
       this.stats.maxCombo = Math.max(this.stats.maxCombo, this.combo);
       P.bloodOnBlade = Math.min(1, (P.bloodOnBlade || 0) + 0.12 + heavy * 0.05);
+      P.gainMana(3 + heavy * 2);
       this.ui.damageNumber(point, dmg, part === 'head' || backstab);
       if (backstab) this.ui.floatText(point.clone().add(V(0, 0.3, 0)), 'УДАР В СПИНУ!', '#ff3344');
     }
@@ -513,17 +511,31 @@ export class Battle {
     e.ch.react(dir, 0.1 + Math.min(0.25, dmg / e.maxHp));
     e.knock = dir.clone().setY(0).multiplyScalar(W.knock * 0.5);
     // устойчивость (poise): лёгкие удары не сбивают атаку, пока не сломана стойка
-    e.poise -= dmg * (W.guardBreak ? 1.5 : 1) * (kind === 'thrust' ? 0.8 : 1) * (backstab ? 2 : 1);
+    // после оглушения короткое время стойку почти не сбить — без бесконечных станлоков
+    const immune = e.poiseImmuneT > 0 || e.state === 'stagger';
+    e.poise -= dmg * (W.guardBreak ? 1.5 : 1) * (kind === 'thrust' ? 0.8 : 1) * (backstab ? 2 : 1) * (immune ? 0.3 : 1);
     e.poiseT = 1.2;
     e.recentHits = (e.recentHits || 0) + 1;
-    if (W.knock >= 7 && (part === 'head' || e.poise <= 0) && kind !== 'thrust') {
+    if (W.knock >= 7 && (part === 'head' || e.poise <= 0) && kind !== 'thrust' && !immune) {
       e.poise = e.maxPoise;
       e.knockdown(dir.clone().setY(0).multiplyScalar(W.knock * 0.6).add(V(0, 2.5, 0)), PART_JOINT[part]);
-    } else if (e.poise <= 0) {
+      return;
+    } else if (e.poise <= 0 && !immune) {
       e.poise = e.maxPoise;
       e.attack = null;
-      e.stagger(0.5 + Math.min(0.4, dmg / e.maxHp));
+      e.stagger(0.45 + Math.min(0.35, dmg / e.maxHp));
       if (byPlayer) this.ui.floatText(e.chest().add(V(0, 0.35, 0)), 'ОШЕЛОМЛЁН', '#ffaa33', 15);
+      return;
+    }
+    if (e.poise <= 0) e.poise = 1;
+    // защитная реакция: после пропущенных ударов враг уходит в блок (и потом контратакует)
+    if (e.state !== 'attack' && e.state !== 'cast' && e.ch.mode === 'anim' && e.canFight) {
+      const turtle = Math.min(0.8, (e.arch.block * 0.9 + e.recentHits * 0.14) * (0.55 + e.skill * 0.5));
+      if (Math.random() < turtle) e.startBlock(0.5 + Math.random() * 0.5);
+      else if (Math.random() < e.arch.dodge * e.skill) {
+        e.vel.copy(dir).setY(0).normalize().multiplyScalar(6).add(V(-dir.z, 0, dir.x).multiplyScalar(e.strafeDir * 3));
+        e.state = 'dodge'; e.stateT = 0.25;
+      }
     }
   }
 
@@ -646,7 +658,7 @@ export class Battle {
     if (!killer && e.lastAttacker && e.time - e.lastAttackerT < 6) killer = e.lastAttacker;
     const byPlayer = !!(killer && killer.isPlayer);
     info.byPlayer = byPlayer;
-    if (byPlayer) { this.stats.kills++; this.save.stats.kills++; }
+    if (byPlayer) { this.stats.kills++; this.save.stats.kills++; this.player.gainMana(12); }
     if (info.hazard && byPlayer && info.hazard !== 'wall') this.stats.envKills++;
     this.killFeed(killer, e, info);
     const fx = this.fx, W = info.weapon;
@@ -749,7 +761,7 @@ export class Battle {
     const alive = this.hostilesOf(this.player).length;
     if (alive === 0 && !e.isAlly) this.slowmo(0.2, 1.6);
     else if (msg && byPlayer) this.slowmo(0.35, 0.6);
-    if (this.player.target === e) this.player.pickTarget();
+    if (this.player.target === e) this.player.target = null;
   }
 
   // ===== Звери =====
@@ -834,8 +846,9 @@ export class Battle {
           this.haptics.pulse(2);
           this.ui.centerText('ПАРИРОВАНИЕ!', 'parry');
           this.ui.flash('rgba(255,240,200,0.3)');
-          src.stagger && src.stagger(1.1);
+          src.stagger && src.stagger(0.8);
           P.stamina = Math.min(P.maxStamina, P.stamina + 20);
+          P.gainMana(10);
           this.slowmo(0.3, 0.45);
           this.stats.parries++; this.save.stats.parries++;
           this.shake(0.3);

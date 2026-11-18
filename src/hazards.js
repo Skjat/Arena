@@ -64,6 +64,7 @@ export class Hazards {
     this.pools = [];
     this.traps = [];
     this.beasts = [];
+    this.posts = [];
     this.time = 0;
     this.navCache = new Map();
     if (id === 'acid') this.buildAcid();
@@ -184,6 +185,7 @@ export class Hazards {
     const angles = [1.05, 2.1, 4.2, 5.25];
     angles.forEach((a, i) => {
       const post = V(Math.sin(a) * 10.2, 0, Math.cos(a) * 10.2);
+      this.posts.push({ x: post.x, z: post.z, r: 0.22 });
       const p = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.2, 1.5, 8), postMat);
       p.position.set(post.x, 0.75, post.z); p.castShadow = true;
       this.group.add(p);
@@ -322,10 +324,22 @@ export class Hazards {
     return m - WALL_T;
   }
 
-  // Вытолкнуть круг радиуса r из стен. Возвращает true при столкновении.
+  // Можно ли стоять в точке (стены, столбы, край арены).
+  walkable(p, r = 0.5) {
+    if (Math.hypot(p.x, p.z) > ARENA_R - Math.max(0.5, r)) return false;
+    if (this.walls.length && this.wallDist(p.x, p.z) < r) return false;
+    for (const c of this.posts) if (Math.hypot(p.x - c.x, p.z - c.z) < c.r + r) return false;
+    return true;
+  }
+
+  // Вытолкнуть круг радиуса r из стен и столбов. Возвращает true при столкновении.
   collide(pos, r) {
-    if (!this.walls.length) return false;
     let hit = false;
+    for (const c of this.posts) {
+      const dx = pos.x - c.x, dz = pos.z - c.z, d = Math.hypot(dx, dz), min = c.r + r;
+      if (d < min && d > 1e-5) { pos.x = c.x + dx / d * min; pos.z = c.z + dz / d * min; hit = true; }
+    }
+    if (!this.walls.length) return hit;
     const o = { x: 0, z: 0 };
     for (const w of this.walls) {
       closestOnSeg(pos.x, pos.z, w, o);
@@ -377,14 +391,14 @@ export class Hazards {
 
   // Первая точка на пути a→b, упирающаяся в стену (для блинка и снарядов).
   pathClear(a, b, r = 0.4) {
-    if (!this.walls.length) return b.clone();
+    if (!this.walls.length && !this.posts.length) return b.clone();
     const L = Math.hypot(b.x - a.x, b.z - a.z);
     const steps = Math.ceil(L / 0.15);
     const p = a.clone();
     for (let i = 1; i <= steps; i++) {
       const t = i / steps;
       const q = V(a.x + (b.x - a.x) * t, b.y, a.z + (b.z - a.z) * t);
-      if (this.wallDist(q.x, q.z) < r) return p;
+      if (!this.walkable(q, r)) return p;
       p.copy(q);
     }
     return p;
@@ -624,6 +638,7 @@ export class Hazards {
   // Свободно ли место для появления.
   isFree(x, z) {
     if (Math.hypot(x, z) > ARENA_R - 1.2) return false;
+    for (const c of this.posts) if (Math.hypot(x - c.x, z - c.z) < c.r + 0.8) return false;
     if (this.walls.length && this.wallDist(x, z) < 0.8) return false;
     for (const pl of this.pools) if (Math.hypot(x - pl.x, z - pl.z) < pl.r + 1.0) return false;
     for (const t of this.traps) if (this.onTrap(t, x, z, 0.6)) return false;

@@ -286,7 +286,7 @@ export class UI {
     const A = ARCHETYPES[e.archetype];
     const w = WEAPONS[A.weapon];
     const glyphs = A.spells.map((sp) => glyphSVG(SPELL_GLYPH[sp], hex(SPELLS[sp].color), 18)).join('');
-    const hp = Math.round(A.hp * (1 + (e.level - 1) * 0.13) * (e.boss ? 1.35 : 1) * e.groupScale);
+    const hp = Math.round(A.hp * 1.2 * (1 + (e.level - 1) * 0.13) * (e.boss ? 1.35 : 1) * e.groupScale);
     return `<div class="mini-card ${side} ${e.boss ? 'boss' : ''}">
       <div class="ti">${e.boss ? '☠ ' : ''}${A.title}</div>
       <div class="nm">${e.name}</div>
@@ -384,6 +384,7 @@ export class UI {
       <div class="scroll" style="flex:1; display:flex; justify-content:center"><div class="settings">
         <div class="set-row"><span>Звук</span>${seg('sound', [[true, 'Вкл'], [false, 'Выкл']])}</div>
         <div class="set-row"><span>Вибрация</span>${seg('haptics', [[true, 'Вкл'], [false, 'Выкл']])}</div>
+        <div class="set-row"><span>Чувствительность обзора</span>${seg('sens', [[0.6, 'Низкая'], [1, 'Средняя'], [1.5, 'Высокая'], [2.2, 'Макс.']])}</div>
         <div class="set-row"><span>Графика</span>${seg('quality', [['auto', 'Авто'], ['low', 'Низк.'], ['medium', 'Средн.'], ['high', 'Выс.']])}</div>
         <div class="set-row"><span>Кровь</span>${seg('blood', [[0, 'Мало'], [1, 'Средне'], [2, 'Реки']])}</div>
         <div class="set-row"><span>Левша (джойстик справа)</span>${seg('lefty', [[false, 'Нет'], [true, 'Да']])}</div>
@@ -397,15 +398,17 @@ export class UI {
     this.screen(`
       <div class="topbar"><button class="btn small" data-act="back" data-to="${back === 'prefight' ? 'menu' : back}">← Назад</button><h2>Как играть</h2><span></span></div>
       <div class="scroll" style="flex:1; display:flex; flex-direction:column; align-items:center"><div class="howto">
-        <div class="card"><div class="nm">🕹 Движение</div>Левый палец — плавающий джойстик. Камера сама держит цель. «»» — рывок с неуязвимостью.</div>
-        <div class="card"><div class="nm">⚔ Удар — свайп</div>Проведите пальцем справа — клинок пройдёт по этой линии. Режьте по шее — отрубите голову, по руке — руку. Быстрый свайп бьёт сильнее.</div>
+        <div class="card"><div class="nm">🕹 Движение</div>Левый палец — плавающий джойстик. «»» — рывок с неуязвимостью.</div>
+        <div class="card"><div class="nm">👁 Обзор — медленно ведите пальцем</div>Справа: медленное перетаскивание поворачивает камеру, вы целитесь сами. Держите палец и ведите — повернётесь, не опуская блок. ◎ — быстро развернуться к ближайшему врагу.</div>
+        <div class="card"><div class="nm">⚔ Удар — быстрый свайп</div>Резкий взмах пальцем справа — клинок пройдёт по этой линии. Режьте по шее — отрубите голову, по руке — руку. Чем быстрее свайп, тем сильнее удар.</div>
         <div class="card"><div class="nm">🗡 Укол — тап</div>Короткое касание — колющий удар в точку. Копьё и кинжал колют особенно больно.</div>
         <div class="card"><div class="nm">🛡 Блок — удержание</div>Держите палец справа — блок. Нажмите в момент удара врага (оружие светится красным) — ПАРИРОВАНИЕ и оглушение врага.</div>
         <div class="card"><div class="nm">✦ Магия — руны</div>Нажмите кнопку руны: время замедлится. Нарисуйте символ: ↑ блинк, ○ щит, △ огненный шар, V толчок, Z молния, X лёд, S кровопийца, ☆ метеор.</div>
         <div class="card"><div class="nm">👁 Читайте врага</div>Враги тоже колдуют: над головой загорается их руна. Ударьте — и каст прервётся. Оружие врага светится перед ударом.</div>
         <div class="card"><div class="nm">⚖ Оружие</div>Кинжал быстрый и короткий, копьё длинное, топор рубит конечности, булава дробит черепа и броню, двуручник медленный, но страшный.</div>
         <div class="card"><div class="nm">⛁ Прокачка</div>За победы — золото и опыт. Золото — оружие и доспехи в Арсенале. Опыт — заклинания в Гримуаре.</div>
-        <div class="card"><div class="nm">⌨ На компьютере</div>WASD — ходьба, мышь — свайпы/клик-укол, ПКМ или F — блок, Q — руна, Пробел — рывок, 1–8 — быстрые заклинания.</div>
+        <div class="card"><div class="nm">✦ Мана</div>Мана копится медленно, но каждый удар клинком по врагу и каждое убийство её пополняют. Колдуйте между атаками.</div>
+        <div class="card"><div class="nm">⌨ На компьютере</div>Клик захватывает мышь: движение — обзор, ЛКМ + рывок мыши — удар, клик — укол, ПКМ или F — блок. WASD — ходьба, стрелки — поворот, Q — руна, Пробел — рывок, Tab — к врагу, 1–8 — заклинания.</div>
       </div>${nextBtn}</div>`, 'howto');
   }
 
@@ -419,7 +422,7 @@ export class UI {
     document.body.classList.add('in-battle');
     document.body.classList.toggle('lefty', !!this.game.save.settings.lefty);
     $('#countdown').textContent = '';
-    $('#btn-target').style.display = B.hostilesOf(B.player).length > 1 ? 'flex' : 'none';
+    $('#btn-target').style.display = 'flex';
     $('#enemy-dots').innerHTML = B.enemies.length > 1 ? B.enemies.map((e) => `<i class="${e.isAlly ? 'ally' : ''}"></i>`).join('') : '';
     $('#feed').innerHTML = '';
     const fate = B.opts.randArena || B.opts.randFormat;
@@ -492,6 +495,9 @@ export class UI {
       const dots = el('#enemy-dots').children;
       B.enemies.forEach((e, i) => { const cls = (e.isAlly ? 'ally ' : '') + (e.dead ? 'dead' : '') + (e === t ? ' cur' : ''); if (dots[i] && dots[i].className !== cls) dots[i].className = cls; });
     }
+    // прицел краснеет, когда враг под прицелом и в досягаемости клинка
+    const hot = t && Math.hypot(t.pos.x - P.pos.x, t.pos.z - P.pos.z) <= P.wtype.reach + 0.3 && P.aimTarget(12) === t;
+    if (C.v.hot !== !!hot) { el('#crosshair').classList.toggle('hot', !!hot); C.v.hot = !!hot; }
     // мана на кнопке руны
     const runeOp = P.mana >= 15 ? '1' : '0.5';
     if (C.v.runeOp !== runeOp) { el('#btn-rune').style.opacity = runeOp; C.v.runeOp = runeOp; }

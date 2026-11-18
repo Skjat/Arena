@@ -79,12 +79,12 @@ export class Enemy {
     this.weaponItem = WEAPONS[A.weapon];
     this.wtype = WEAPON_TYPES[this.weaponItem.type];
     this.wkind = this.weaponItem.type;
-    this.maxHp = Math.round(A.hp * (1 + (lvl - 1) * 0.13) * (def.boss ? 1.35 : 1) * def.groupScale);
+    this.maxHp = Math.round(A.hp * 1.2 * (1 + (lvl - 1) * 0.13) * (def.boss ? 1.35 : 1) * def.groupScale);
     this.hp = this.maxHp;
     const ab = Math.min(12, Math.floor(lvl / 2));
     this.armor = { head: A.armor.head + ab * 0.6, body: A.armor.body + ab, limbs: A.armor.limbs + ab * 0.4 };
-    this.dmgScale = 0.6 * (1 + (lvl - 1) * 0.07) * (def.boss ? 1.1 : 1) * (def.groupScale < 1 ? 0.85 : 1);
-    this.skill = Math.min(1, 0.3 + lvl * 0.04 + (def.boss ? 0.15 : 0));
+    this.dmgScale = 0.78 * (1 + (lvl - 1) * 0.08) * (def.boss ? 1.1 : 1) * (def.groupScale < 1 ? 0.88 : 1);
+    this.skill = Math.min(1, 0.45 + lvl * 0.035 + (def.boss ? 0.15 : 0));
     this.spellLevel = Math.min(3, 1 + Math.floor(lvl / 7));
     this.spells = A.spells.slice();
     this.spellCd = {};
@@ -103,12 +103,13 @@ export class Enemy {
     this.shield = null;
     this.thinkT = 0.5;
     this.strafeDir = Math.random() < 0.5 ? 1 : -1;
+    this.uid = Enemy.nextId = (Enemy.nextId || 0) + 1;
     this.dead = false;
     this.deathT = 0;
     this.knockT = 0;
     this.time = 0;
     this.lastHitT = -10;
-    this.maxPoise = Math.round(A.hp * 0.32 * (def.boss ? 1.7 : 1) + lvl * 1.5);
+    this.maxPoise = Math.round(A.hp * 0.45 * (def.boss ? 1.7 : 1) + lvl * 2);
     this.poise = this.maxPoise;
     this.poiseT = 0;
     this.recentHits = 0;
@@ -200,8 +201,10 @@ export class Enemy {
     }
     const turtle = this.arch.block > 0.1 ? Math.min(0.45, this.recentHits * 0.15) : 0;
     const chance = this.arch.block * (0.6 + this.skill * 0.6) * (weaponSlow > 0.35 ? 1.3 : weaponSlow < 0.25 ? 0.4 : 1) + turtle;
-    if (this.state !== 'attack' && Math.random() < chance && this.canFight) {
-      setTimeout(() => { if (!this.dead && !this.busy) this.startBlock(0.5 + Math.random() * 0.4); }, Math.max(0, this.arch.react * (1.2 - this.skill * 0.5) * 1000 * 0.5));
+    if (this.state !== 'attack' && Math.random() < chance * 1.35 && this.canFight) {
+      const delay = this.arch.react * (1.1 - this.skill * 0.6) * 300;
+      if (delay < 40) this.startBlock(0.5 + Math.random() * 0.4);
+      else setTimeout(() => { if (!this.dead && !this.busy) this.startBlock(0.5 + Math.random() * 0.4); }, delay);
     }
   }
 
@@ -235,6 +238,7 @@ export class Enemy {
     }
     // восстановление стойки
     this.recentHits = Math.max(0, this.recentHits - dt * 0.7);
+    if (this.poiseImmuneT > 0) this.poiseImmuneT -= dt;
     if (this.poiseT > 0) this.poiseT -= dt;
     else this.poise = Math.min(this.maxPoise, this.poise + this.maxPoise * 0.4 * dt);
     // статусы
@@ -309,18 +313,23 @@ export class Enemy {
     if (st === 'attack') { this.updateAttack(dt); return; }
     if (st === 'cast') { this.updateCast(dt); return; }
     if (st === 'stagger' || st === 'getup' || st === 'dodge' || st === 'taunt') {
-      if (this.stateT <= 0) { this.state = 'idle'; this.thinkT = 0.1; }
+      if (this.stateT <= 0) {
+        if (st === 'stagger' || st === 'getup') this.poiseImmuneT = 1.8;
+        this.state = 'idle'; this.thinkT = 0.05;
+        // после оглушения — сразу в ответ
+        if ((st === 'stagger' || st === 'getup') && this.canFight && dist <= reach + 0.3 && Math.random() < 0.5 + this.skill * 0.4) this.startAttack(false, 0.75);
+      }
       return;
     }
     if (st === 'block') {
       if (this.stateT <= 0) { this.state = 'idle'; this.thinkT = 0.15; }
       // контратака из блока
-      if (dist <= reach && Math.random() < dt * 1.5 * this.arch.aggr) this.startAttack();
+      if (dist <= reach && Math.random() < dt * (1.5 + this.skill * 2) * this.arch.aggr) this.startAttack(false, 0.6);
       return;
     }
     this.thinkT -= dt;
     if (this.thinkT > 0) return;
-    this.thinkT = 0.18 + Math.random() * 0.25 * (1.3 - this.skill);
+    this.thinkT = 0.1 + Math.random() * 0.2 * (1.3 - this.skill);
     const A = this.arch;
     const hpFrac = this.hp / this.maxHp;
     const ready = (s) => this.spells.includes(s) && this.spellCd[s] <= 0;
@@ -338,12 +347,14 @@ export class Enemy {
       return;
     }
     if (dist > reach + 0.35) {
-      const casterBias = A.caster ? 0.55 : 0.25;
+      const casterBias = A.caster ? 0.75 : 0.35;
       for (const s of ['meteor', 'lightning', 'fireball', 'frost']) {
         if (ready(s) && dist > 3 && dist < 16 && Math.random() < casterBias) return this.startCast(s);
       }
       if (ready('blink') && dist > 5.5 && Math.random() < 0.4) return this.startCast('blink');
       if (ready('push') && dist < 5 && Math.random() < 0.15) return this.startCast('push');
+      // выпад с дистанции
+      if (dist < reach + 1.4 && Math.random() < A.aggr * 0.45 * this.skill) return this.startAttack(true);
       this.state = A.caster && dist < 5 && Math.random() < 0.3 ? 'strafe' : 'approach';
       return;
     }
@@ -351,8 +362,9 @@ export class Enemy {
     if (ready('push') && dist < 3.5 && Math.random() < 0.18) return this.startCast('push');
     const pl = this.target;
     if (pl.isPlayer && pl.state === 'swing' && Math.random() < A.block * 0.8) return this.startBlock(0.6);
-    if (Math.random() < A.aggr * (0.75 + this.skill * 0.4)) return this.startAttack();
-    if (Math.random() < A.block * 0.7) return this.startBlock(0.5 + Math.random() * 0.6);
+    if (Math.random() < Math.min(0.95, A.aggr * (0.85 + this.skill * 0.5))) return this.startAttack();
+    // стойка в защите, из которой бьёт ответный удар
+    if (Math.random() < A.block * (0.7 + this.skill * 0.5)) return this.startBlock(0.45 + Math.random() * 0.6);
     this.state = 'strafe';
     if (Math.random() < 0.3) this.strafeDir *= -1;
   }
@@ -365,6 +377,16 @@ export class Enemy {
     // навигация в лабиринте: идти по полю расстояний, если цель за стеной
     let navDir = dir;
     if (B.hazards && this.foe) navDir = B.hazards.navDir(this.pos, this.foe.pos, this.foe) || dir;
+    // обход с фланга: если на ту же цель идут несколько бойцов, они расходятся по сторонам
+    if (this.foe && navDir === dir) {
+      const mates = B.enemies.filter((o) => !o.dead && o.team === this.team && o.foe === this.foe).sort((a, b) => a.uid - b.uid);
+      const idx = mates.indexOf(this);
+      if (idx > 0 && dist > 1.2) {
+        const side = idx % 2 ? 1 : -1;
+        const k = Math.min(1, (dist - 1) / 3) * (0.7 + 0.25 * idx);
+        navDir = dir.clone().add(V(-dir.z, 0, dir.x).multiplyScalar(side * k)).normalize();
+      }
+    }
     const side = V(-dir.z, 0, dir.x).multiplyScalar(this.strafeDir);
     const speed = this.arch.speed * (this.status.slow > 0 ? 0.5 : 1) * (this.def.boss ? 1.05 : 1);
     const reach = this.canFight ? this.wtype.enemyReach * this.ch.scale : 1.1;
@@ -377,7 +399,7 @@ export class Enemy {
       }
       case 'strafe': {
         const pref = this.arch.keepDistance ? reach * 0.95 : (this.arch.caster ? 4.5 : this.wtype.prefRange);
-        want.copy(side).multiplyScalar(speed * 0.55).addScaledVector(dir, (dist - pref) * 1.5);
+        want.copy(side).multiplyScalar(speed * 0.7).addScaledVector(dir, (dist - pref) * 1.5);
         if (want.length() > speed) want.setLength(speed);
         if (this.stateT < -1.2) { this.state = 'idle'; this.stateT = 0; }
         break;
@@ -386,7 +408,7 @@ export class Enemy {
       case 'flee': want.copy(dir).multiplyScalar(-speed * 0.8); break;
       case 'taunt': break;
       case 'attack': {
-        if (this.attack && this.attack.phase === 'windup') want.copy(dir).multiplyScalar(Math.max(0, dist - reach * 0.7) * 2.5);
+        if (this.attack && this.attack.phase === 'windup') want.copy(dir).multiplyScalar(Math.min(speed * 1.4, Math.max(0, dist - reach * 0.7) * (this.attack.lunge ? 5 : 3)));
         if (this.attack && this.attack.phase === 'strike') want.copy(dir).multiplyScalar(this.wkind === 'spear' ? 1.5 : 2.5);
         break;
       }
@@ -430,7 +452,7 @@ export class Enemy {
     let diff = wantYaw - this.ch.facing;
     while (diff > Math.PI) diff -= Math.PI * 2;
     while (diff < -Math.PI) diff += Math.PI * 2;
-    const turnRate = lockTurn ? 1.2 : (this.state === 'stagger' ? 1 : 7);
+    const turnRate = lockTurn ? 2.2 : (this.state === 'stagger' ? 1 : 8);
     this.ch.facing += diff * Math.min(1, dt * turnRate);
   }
 
@@ -524,14 +546,17 @@ export class Enemy {
   }
 
   // ===== Атака =====
-  startAttack() {
+  startAttack(lunge = false, fast = 1, combo = 0) {
     const unarmed = !this.canFight;
     if (unarmed && !this.leftOk) return;
     const set = unarmed ? ['thrust', 'slashR'] : ATTACK_SETS[this.wkind];
-    const type = set[Math.floor(Math.random() * set.length)];
-    const speedK = 1 - this.skill * 0.25;
+    let type = set[Math.floor(Math.random() * set.length)];
+    // в цепочке — не повторять тот же удар
+    if (combo && this.attack && type === this.attack.type) type = set[(set.indexOf(type) + 1) % set.length];
+    const speedK = (1 - this.skill * 0.3) * fast;
     this.attack = {
-      type, phase: 'windup', t: 0, unarmed,
+      type, phase: 'windup', t: 0, unarmed, lunge, combo,
+      feint: !unarmed && !combo && this.skill > 0.55 && Math.random() < 0.14 * this.skill,
       windup: unarmed ? 0.42 : this.wtype.windup * speedK * (0.85 + Math.random() * 0.3),
       strike: unarmed ? 0.12 : this.wtype.strike,
       recover: unarmed ? 0.45 : this.wtype.recover * (1.2 - this.skill * 0.4),
@@ -551,6 +576,13 @@ export class Enemy {
     const at = this.attack;
     if (!at) { this.state = 'idle'; return; }
     at.t += dt;
+    // финт: замах обрывается, чтобы выманить парирование
+    if (at.phase === 'windup' && at.feint && at.t >= at.windup * 0.6) {
+      this.attack = null;
+      this.state = 'idle';
+      this.thinkT = 0.12 + Math.random() * 0.1;
+      return;
+    }
     if (at.phase === 'windup' && at.t >= at.windup) {
       at.phase = 'strike'; at.t = 0;
       this.battle.sound.swing(this.wtype.swing / 0.3);
@@ -560,10 +592,22 @@ export class Enemy {
         this.tryHit(at);
       }
       if (at.t >= at.strike) { at.phase = 'recover'; at.t = 0; }
-    } else if (at.phase === 'recover' && at.t >= at.recover) {
-      this.attack = null;
-      this.state = 'idle';
-      this.thinkT = 0.05 + Math.random() * 0.2;
+    } else if (at.phase === 'recover') {
+      // серия ударов
+      const maxCombo = at.unarmed ? 1 : 1 + Math.floor(this.skill * 2.2);
+      if (!at.chainChecked && at.t >= at.recover * 0.3) {
+        at.chainChecked = true;
+        const reach = this.wtype.enemyReach * this.ch.scale + 0.4;
+        if (at.combo < maxCombo && this.foe && this.distToFoe() <= reach && Math.random() < this.arch.aggr * this.skill * 0.95) {
+          this.startAttack(false, 0.62, at.combo + 1);
+          return;
+        }
+      }
+      if (at.t >= at.recover) {
+        this.attack = null;
+        this.state = 'idle';
+        this.thinkT = 0.05 + Math.random() * 0.15;
+      }
     }
   }
 
@@ -591,8 +635,8 @@ export class Enemy {
   startCast(spell) {
     const c = ENEMY_CAST[spell];
     if (!c || !this.leftOk) return;
-    this.spellCd[spell] = c.cd * (1.2 - this.skill * 0.3) + Math.random() * 2;
-    this.cast = { spell, t: 0, dur: c.time * (1.1 - this.skill * 0.2) };
+    this.spellCd[spell] = c.cd * (1.05 - this.skill * 0.35) + Math.random() * 1.5;
+    this.cast = { spell, t: 0, dur: c.time * (1.05 - this.skill * 0.25) };
     this.state = 'cast';
     const col = SPELLS[spell].color;
     this.rune.material.map = runeTexture(SPELL_GLYPH[spell], col);
@@ -677,6 +721,14 @@ export class Enemy {
   }
 
   get displayName() { return this.name; }
+
+  // Ответный удар сразу после того, как блок отбил атаку.
+  riposte() {
+    if (this.dead || !this.canFight || this.ch.mode !== 'anim') return;
+    if (Math.random() > 0.35 + this.skill * 0.55) return;
+    this.state = 'idle';
+    this.startAttack(false, 0.45);
+  }
 
   dispose() {
     this.ch.dispose();

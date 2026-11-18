@@ -67,7 +67,7 @@ export class Player {
     this.maxHp = 100 + hpBonus + up.vitality * 15;
     this.maxMana = 100 + manaMax + up.manaPool * 20;
     this.maxStamina = 100;
-    this.manaRegen = 7 * (1 + manaRegen + up.manaFlow * 0.25);
+    this.manaRegen = 2.2 * (1 + manaRegen + up.manaFlow * 0.25);
     this.staminaRegen = 32 * (1 + staminaRegen);
     this.handsLook = eq.hands ? ARMOR[eq.hands] : null;
   }
@@ -140,39 +140,43 @@ export class Player {
   forward(out) { return out.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw)); }
   right(out) { return out.set(Math.cos(this.yaw), 0, -Math.sin(this.yaw)); }
 
-  // Помощь в прицеливании: линия удара сдвигается по горизонтали к цели,
-  // сохраняя высоту горизонтального реза (шея/торс/ноги).
+  // Помощь в прицеливании (лёгкая): линия удара чуть сдвигается по горизонтали
+  // к ближайшему врагу рядом с ней, сохраняя высоту реза. Целиться всё равно нужно самому.
   assistLine(a, b) {
-    const t = this.target;
-    if (!t) return [a, b];
-    const c = t.chest().project(this.camera);
-    if (c.z > 1) return [a, b];
     const asp = this.camera.aspect;
-    const A = { x: a.x * asp, y: a.y }, Bp = { x: b.x * asp, y: b.y }, C = { x: c.x * asp, y: c.y };
-    let dx = Bp.x - A.x, dy = Bp.y - A.y;
-    const L = Math.hypot(dx, dy) || 1;
-    const ux = dx / L, uy = dy / L;
-    let shift = 0;
-    if (Math.abs(uy) > 0.3) {
-      const tt = (C.y - A.y) / uy;
-      shift = C.x - (A.x + ux * tt);
+    let best = null, bestShift = Infinity;
+    for (const t of this.battle.hostilesOf(this)) {
+      if (Math.hypot(t.pos.x - this.pos.x, t.pos.z - this.pos.z) > this.wtype.reach + 1.0) continue;
+      const c = t.chest().project(this.camera);
+      if (c.z > 1 || Math.abs(c.x) > 1 || Math.abs(c.y) > 1) continue;
+      const A = { x: a.x * asp, y: a.y }, Bp = { x: b.x * asp, y: b.y }, C = { x: c.x * asp, y: c.y };
+      const dx = Bp.x - A.x, dy = Bp.y - A.y;
+      const L = Math.hypot(dx, dy) || 1;
+      const ux = dx / L, uy = dy / L;
+      let shift = 0;
+      if (Math.abs(uy) > 0.3) shift = C.x - (A.x + ux * (C.y - A.y) / uy);
+      if (Math.abs(shift) < Math.abs(bestShift)) { bestShift = shift; best = { A, Bp, C, ux, uy, L }; }
     }
-    shift = Math.max(-asp * 0.8, Math.min(asp * 0.8, shift));
-    A.x += shift; Bp.x += shift;
-    // линия должна пересекать цель
+    if (!best || Math.abs(bestShift) > asp * 0.4) return [a, b];
+    const { A, Bp, C, ux, uy, L } = best;
+    A.x += bestShift; Bp.x += bestShift;
     const tc = (C.x - A.x) * ux + (C.y - A.y) * uy;
-    const margin = 0.35;
+    const margin = 0.3;
     if (tc < margin) { A.x -= ux * (margin - tc); A.y -= uy * (margin - tc); }
     if (tc > L - margin) { Bp.x += ux * (tc - L + margin); Bp.y += uy * (tc - L + margin); }
     return [{ x: A.x / asp, y: A.y }, { x: Bp.x / asp, y: Bp.y }];
   }
 
   assistPoint(p) {
-    const t = this.target;
-    if (!t) return p;
-    const c = t.chest().project(this.camera);
-    if (c.z > 1 || Math.abs(p.x - c.x) > 0.7) return p;
-    return { x: c.x + (p.x - c.x) * 0.15, y: p.y };
+    let best = null, bd = 0.35;
+    for (const t of this.battle.hostilesOf(this)) {
+      const c = t.chest().project(this.camera);
+      if (c.z > 1) continue;
+      const d = Math.abs(p.x - c.x) * this.camera.aspect;
+      if (d < bd && Math.abs(p.y - c.y) < 0.6) { bd = d; best = c; }
+    }
+    if (!best) return p;
+    return { x: best.x + (p.x - best.x) * 0.3, y: p.y };
   }
 
   // ===== Действия =====
@@ -212,6 +216,9 @@ export class Player {
     return true;
   }
 
+  // Мана за агрессию: удары клинком, парирования и убийства пополняют её.
+  gainMana(v) { this.mana = Math.min(this.maxMana, this.mana + v); }
+
   pressBlock() { if (!this.dead) { this.blockHeld = true; this.blockStart = this.time; } }
   releaseBlock() { this.blockHeld = false; }
 
@@ -245,32 +252,54 @@ export class Player {
     this.blockHeld = false;
   }
 
-  // ===== Цель =====
-  pickTarget(cycle = false) {
-    const alive = this.battle.enemies.filter((e) => !e.dead && e.team !== this.team);
-    if (!alive.length) { this.target = null; return; }
-    if (cycle && this.target && alive.length > 1) {
-      const sorted = alive.slice().sort((a, b) => this.angleTo(a) - this.angleTo(b));
-      const i = sorted.indexOf(this.target);
-      this.target = sorted[(i + 1) % sorted.length];
-      return;
-    }
-    let best = null, bs = Infinity;
-    const f = this.forward(new THREE.Vector3());
-    for (const e of alive) {
-      const d = _v.subVectors(e.pos, this.pos); d.y = 0;
+  // ===== Цель (без захвата камеры) =====
+  // Враг, на которого смотрит прицел (в пределах конуса), с учётом стен.
+  aimTarget(coneDeg = 20, maxDist = 30) {
+    const cam = this.camera;
+    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion);
+    const eye = cam.position;
+    const cos = Math.cos(coneDeg * Math.PI / 180);
+    let best = null, bs = -Infinity;
+    for (const e of this.battle.hostilesOf(this)) {
+      const d = e.chest().sub(eye);
       const dist = d.length();
-      const ang = Math.acos(Math.max(-1, Math.min(1, d.normalize().dot(f))));
-      let score = dist + ang * 4;
-      if (this.battle.hazards && this.battle.hazards.losBlocked(this.pos, e.pos)) score += 6;
-      if (score < bs) { bs = score; best = e; }
+      if (dist > maxDist) continue;
+      const dot = d.divideScalar(dist).dot(fwd);
+      if (dot < cos) continue;
+      if (this.battle.hazards && this.battle.hazards.losBlocked(this.pos, e.pos)) continue;
+      const sc = dot * 10 - dist * 0.05;
+      if (sc > bs) { bs = sc; best = e; }
     }
-    this.target = best;
+    return best;
   }
 
-  angleTo(e) {
-    return Math.atan2(e.pos.x - this.pos.x, e.pos.z - this.pos.z);
+  spellTarget() { return this.aimTarget(18); }
+
+  updateAim(dt) {
+    const t = this.aimTarget(28);
+    if (t) { this.target = t; this.targetT = 2; }
+    else {
+      this.targetT = (this.targetT || 0) - dt;
+      if (this.targetT <= 0 || (this.target && this.target.dead)) this.target = null;
+    }
+    if (this.target && this.target.dead) this.target = null;
   }
+
+  // Быстрый разворот к ближайшему врагу (одноразовый, без привязки).
+  quickTurn() {
+    const list = this.battle.hostilesOf(this);
+    if (!list.length) return;
+    const cur = this.aimTarget(25);
+    const cands = list.filter((e) => e !== cur);
+    const pool = cands.length ? cands : list;
+    pool.sort((a, b) => Math.hypot(a.pos.x - this.pos.x, a.pos.z - this.pos.z) - Math.hypot(b.pos.x - this.pos.x, b.pos.z - this.pos.z));
+    const e = pool[0];
+    const tp = e.chest();
+    const dx = tp.x - this.pos.x, dz = tp.z - this.pos.z;
+    this.turnTo = { yaw: Math.atan2(-dx, -dz), pitch: Math.max(-0.5, Math.min(0.2, Math.atan2(tp.y - EYE, Math.max(0.8, Math.hypot(dx, dz))))) };
+  }
+
+  pickTarget() { this.updateAim(0); }
 
   // ===== Обновление =====
   update(dt, input) {
@@ -290,16 +319,16 @@ export class Player {
       this.shield.t -= dt;
       if (this.shield.t <= 0 || this.shield.hp <= 0) { this.shield = null; B.ui.shield(false); }
     }
-    if (!this.target || this.target.dead) this.pickTarget();
-    // в лабиринте — переключиться на видимого врага, если цель долго за стеной
-    if (B.hazards && this.target && B.hazards.walls && B.hazards.losBlocked(this.pos, this.target.pos)) {
-      this.hiddenT = (this.hiddenT || 0) + dt;
-      if (this.hiddenT > 1.2) {
-        this.hiddenT = 0;
-        const vis = this.battle.enemies.find((e) => !e.dead && e.team !== this.team && !B.hazards.losBlocked(this.pos, e.pos));
-        if (vis) this.target = vis;
-      }
-    } else this.hiddenT = 0;
+    // свободный обзор: палец/мышь/стрелки
+    const lk = input.look;
+    if (lk.x || lk.y) {
+      const sens = (lk.mouse ? 0.0023 : 0.0052) * (B.save.settings.sens || 1);
+      this.yaw -= lk.x * sens;
+      this.pitch -= lk.y * sens * 0.85;
+      this.pitch = Math.max(-1.1, Math.min(0.9, this.pitch));
+      lk.x = 0; lk.y = 0;
+      this.turnTo = null;
+    }
 
     // движение
     const mv = input.move;
@@ -340,31 +369,17 @@ export class Player {
     this.bob = Math.sin(this.walkPhase * 2) * 0.025 * Math.min(1, sp / 3);
     if (prevBob > -0.015 && this.bob <= -0.015 && sp > 1) B.sound.step();
 
-    // поворот к цели (lock-on); в лабиринте, если цель за стеной, — вдоль пути к ней
-    let pathDir = null;
-    if (this.target && B.hazards && B.hazards.walls.length && B.hazards.losBlocked(this.pos, this.target.pos)) {
-      pathDir = B.hazards.navLookAhead(this.pos, this.target.pos, this.target, 5);
-    }
-    if (pathDir) {
-      const want = Math.atan2(-pathDir.x, -pathDir.z);
-      let diff = want - this.yaw;
+    // быстрый разворот (кнопка ◎)
+    if (this.turnTo) {
+      let diff = this.turnTo.yaw - this.yaw;
       while (diff > Math.PI) diff -= Math.PI * 2;
       while (diff < -Math.PI) diff += Math.PI * 2;
-      this.yaw += diff * Math.min(1, dt * 4);
-      this.pitch += (-0.05 - this.pitch) * Math.min(1, dt * 4);
-    } else if (this.target) {
-      const tp = this.target.aimPoint();
-      const dx = tp.x - this.pos.x, dz = tp.z - this.pos.z;
-      const want = Math.atan2(-dx, -dz);
-      let diff = want - this.yaw;
-      while (diff > Math.PI) diff -= Math.PI * 2;
-      while (diff < -Math.PI) diff += Math.PI * 2;
-      const rate = Math.abs(diff) > 1.2 ? 9 : 6;
-      this.yaw += diff * Math.min(1, dt * rate);
-      const dist = Math.hypot(dx, dz);
-      const wantPitch = Math.max(-0.5, Math.min(0.2, Math.atan2(tp.y - EYE, Math.max(0.8, dist))));
-      this.pitch += (wantPitch - this.pitch) * Math.min(1, dt * 5);
+      const k = Math.min(1, dt * 12);
+      this.yaw += diff * k;
+      this.pitch += (this.turnTo.pitch - this.pitch) * k;
+      if (Math.abs(diff) < 0.02) this.turnTo = null;
     }
+    this.updateAim(dt);
 
     // таймеры состояний
     if (this.state === 'recoil') {

@@ -83,11 +83,27 @@ export class Spells {
     return V(-0.22, -0.2, -0.55).applyMatrix4(cam.matrixWorld);
   }
 
+  // Точка прицела: враг под прицелом или точка по направлению взгляда.
   playerAim() {
     const P = this.player;
-    if (P.target) return P.target.chest();
-    const f = P.forward(new THREE.Vector3());
-    return V(P.pos.x + f.x * 10, 1.2, P.pos.z + f.z * 10);
+    const t = P.spellTarget();
+    if (t) return t.chest();
+    const cam = this.battle.camera;
+    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion);
+    return cam.position.clone().addScaledVector(fwd, 14);
+  }
+
+  // Точка на земле по направлению взгляда (для метеора).
+  groundAim(maxDist = 16) {
+    const cam = this.battle.camera;
+    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(cam.quaternion);
+    let d = maxDist;
+    if (fwd.y < -0.02) d = Math.min(maxDist, cam.position.y / -fwd.y);
+    const p = cam.position.clone().addScaledVector(fwd, d);
+    p.y = 0;
+    const r = Math.hypot(p.x, p.z), lim = ARENA_R - 1;
+    if (r > lim) p.multiplyScalar(lim / r);
+    return p;
   }
 
   // Урон по любому бойцу (игроку или ИИ) от заклинания.
@@ -113,31 +129,48 @@ export class Spells {
     const hand = this.playerHand();
     const foes = B.hostilesOf(P);
     const corpses = B.enemies.filter((e) => e.dead);
+    const aimed = P.spellTarget();
     switch (id) {
       case 'blink': {
         const dirMap = { arrow_up: [0, 1], arrow_down: [0, -1], arrow_left: [-1, 0], arrow_right: [1, 0] };
         const [dx, dy] = dirMap[glyph] || [0, 1];
         const f = P.forward(new THREE.Vector3()), r = P.right(new THREE.Vector3());
         const dir = f.multiplyScalar(dy).add(r.multiplyScalar(dx)).normalize();
-        const start = P.pos.clone();
-        let end = start.clone().addScaledVector(dir, L.dist);
-        const lim = ARENA_R - 0.6;
-        const er = Math.hypot(end.x, end.z);
-        if (er > lim) end.multiplyScalar(lim / er);
-        // стены лабиринта останавливают рывок
-        if (B.hazards) end = B.hazards.pathClear(start, end, 0.5);
-        for (const e of B.enemies) {
-          if (e.dead) continue;
-          const d = Math.hypot(end.x - e.pos.x, end.z - e.pos.z);
-          if (d < 0.9) end.addScaledVector(dir, 0.9 - d + 0.2);
+        const start = P.pos.clone(); start.y = 0;
+        // идём по пути шагами и останавливаемся перед стеной, столбом или краем арены
+        const H = B.hazards;
+        const ok = (q, r) => (H ? H.walkable(q, r) : Math.hypot(q.x, q.z) <= ARENA_R - 0.6);
+        const blockers = B.combatants().filter((c) => !c.isPlayer).concat(B.beasts.filter((b) => !b.dead));
+        const inBody = (q) => blockers.some((c) => Math.hypot(q.x - c.pos.x, q.z - c.pos.z) < 0.85);
+        let end = start.clone();
+        const stepLen = 0.15, steps = Math.ceil(L.dist / stepLen);
+        for (let i = 1; i <= steps; i++) {
+          const q = start.clone().addScaledVector(dir, Math.min(L.dist, i * stepLen));
+          if (!ok(q, 0.6)) break;
+          end.copy(q);
         }
-        const er2 = Math.hypot(end.x, end.z);
-        if (er2 > lim) end.multiplyScalar(lim / er2);
-        if (B.hazards) B.hazards.collide(end, 0.4);
+        // нельзя оказаться внутри противника: сначала пробуем проскочить за него, иначе отступаем
+        if (inBody(end)) {
+          let fixed = null;
+          for (let k = 1; k <= 8; k++) {
+            const q = end.clone().addScaledVector(dir, k * stepLen);
+            if (!ok(q, 0.6)) break;
+            if (!inBody(q)) { fixed = q; break; }
+          }
+          if (!fixed) {
+            for (let k = 1; k <= steps; k++) {
+              const q = end.clone().addScaledVector(dir, -k * stepLen);
+              if (q.distanceTo(start) > L.dist + 0.01) break;
+              if (!inBody(q) && ok(q, 0.6)) { fixed = q; break; }
+            }
+          }
+          end = fixed || start.clone();
+        }
         for (let i = 0; i <= 14; i++) {
           const p = start.clone().lerp(end, i / 14); p.y = 1 + Math.random() * 0.8;
           this.fx.add.add({ pos: p, vel: V((Math.random() - 0.5) * 0.5, Math.random() * 0.5, (Math.random() - 0.5) * 0.5), color: [0.4, 0.8, 1], size: 0.25, life: 0.5 + Math.random() * 0.3 });
         }
+        if (end.distanceTo(start) < 0.3) { B.ui.centerText('Блинк упёрся в препятствие', 'fail'); }
         P.pos.copy(end); P.pos.y = 0;
         P.invuln = Math.max(P.invuln, 0.35);
         P.fovKick = 14;
@@ -145,7 +178,7 @@ export class Spells {
         for (const e of foes) {
           const toP = V(P.pos.x - e.pos.x, 0, P.pos.z - e.pos.z).normalize();
           const dot = Math.sin(e.ch.facing) * toP.x + Math.cos(e.ch.facing) * toP.z;
-          if (dot < -0.3 && Math.hypot(P.pos.x - e.pos.x, P.pos.z - e.pos.z) < 4) { P.backstabT = 1.6; P.target = e; B.ui.flash('rgba(120,200,255,0.25)'); }
+          if (dot < -0.3 && Math.hypot(P.pos.x - e.pos.x, P.pos.z - e.pos.z) < 4) { P.backstabT = 1.6; B.ui.flash('rgba(120,200,255,0.25)'); }
         }
         B.ui.flash('rgba(140,210,255,0.35)');
         break;
@@ -159,20 +192,20 @@ export class Spells {
       }
       case 'fireball': {
         const dir = this.playerAim().sub(hand).normalize();
-        this.spawnProjectile({ kind: 'fire', team: 0, owner: P, pos: hand, dir, speed: 19, dmg: L.dmg, burn: L.burn, radius: L.radius, color: S.color, homeTarget: P.target, turn: 4, size: 0.22 });
+        this.spawnProjectile({ kind: 'fire', team: 0, owner: P, pos: hand, dir, speed: 19, dmg: L.dmg, burn: L.burn, radius: L.radius, color: S.color, homeTarget: aimed, turn: 2, size: 0.22 });
         B.sound.fireCast();
         break;
       }
       case 'frost': {
         const dir = this.playerAim().sub(hand).normalize();
-        this.spawnProjectile({ kind: 'frost', team: 0, owner: P, pos: hand, dir, speed: 17, dmg: L.dmg, freeze: L.freeze, color: S.color, homeTarget: P.target, turn: 4, size: 0.17 });
+        this.spawnProjectile({ kind: 'frost', team: 0, owner: P, pos: hand, dir, speed: 17, dmg: L.dmg, freeze: L.freeze, color: S.color, homeTarget: aimed, turn: 2, size: 0.17 });
         B.sound.ice();
         break;
       }
       case 'lightning': {
         const targets = [];
-        let cur = P.target && !P.target.dead ? P.target : null;
-        if (!cur) { B.sound.zap(); this.boltVisual(hand, this.playerAim(), S.color); break; }
+        let cur = aimed;
+        if (!cur) { B.sound.zap(); this.boltVisual(hand, this.playerAim(), S.color); B.ui.centerText('Молния: нет цели в прицеле', 'fail'); break; }
         targets.push(cur);
         for (let c = 0; c < L.chain; c++) {
           const next = foes.filter((e) => !targets.includes(e)).sort((a, b) => a.pos.distanceTo(cur.pos) - b.pos.distanceTo(cur.pos))[0];
@@ -194,6 +227,7 @@ export class Spells {
       case 'push': {
         const f = P.forward(new THREE.Vector3());
         this.wave(P.pos.clone().addScaledVector(f, 0.8), f, S.color);
+        // толчок бьёт туда, куда смотрит игрок
         for (const e of [...foes, ...corpses]) {
           const d = V(e.pos.x - P.pos.x, 0, e.pos.z - P.pos.z);
           if (e.dead && e.ch.ragdoll) d.set(e.ch.ragdoll.p[J.PELVIS].x - P.pos.x, 0, e.ch.ragdoll.p[J.PELVIS].z - P.pos.z);
@@ -216,15 +250,15 @@ export class Spells {
         break;
       }
       case 'drain': {
-        const t = P.target && !P.target.dead ? P.target : null;
-        if (!t) { B.sound.fizzle(); break; }
+        const t = aimed;
+        if (!t) { B.sound.fizzle(); B.ui.centerText('Кровопийца: нет цели в прицеле', 'fail'); break; }
         this.beams.push({ caster: P, target: t, t: 0, dur: 1.3, total: L.total, color: S.color });
         B.sound.drain();
         break;
       }
       case 'meteor': {
-        const t = P.target && !P.target.dead ? P.target : null;
-        const pos = t ? t.pos.clone() : P.pos.clone().addScaledVector(P.forward(new THREE.Vector3()), 6);
+        const t = aimed;
+        const pos = t ? t.pos.clone() : this.groundAim();
         pos.y = 0;
         this.spawnMeteor(pos, 0, L.dmg, L.radius, 1.0, t, P);
         break;
@@ -285,7 +319,10 @@ export class Spells {
         const rr = Math.hypot(to.x, to.z), lim = ARENA_R - 1;
         if (rr > lim) to.multiplyScalar(lim / rr);
         to.y = 0;
-        if (B.hazards) { B.hazards.collide(to, 0.4); if (!B.hazards.isFree(to.x, to.z) && B.hazards.inAcid && B.hazards.inAcid(to.x, to.z)) to.copy(from); }
+        if (B.hazards) {
+          if (!B.hazards.isFree(to.x, to.z)) to.copy(B.hazards.freeNear(to.x, to.z));
+          if (!B.hazards.walkable(to, 0.5)) to.copy(from);
+        }
         for (let i = 0; i <= 10; i++) {
           const p = from.clone().lerp(to, i / 10); p.y = 1 + Math.random() * 0.6;
           this.fx.add.add({ pos: p, vel: V(0, 0.4, 0), color: [0.4, 0.8, 1], size: 0.25, life: 0.5 });
@@ -352,7 +389,7 @@ export class Spells {
           const d = Math.hypot(pr.pos.x - c.pos.x, pr.pos.z - c.pos.z);
           if (d < 0.55 && pr.pos.y < EYE + 0.3) {
             if (c.shield && c.shield.reflect) {
-              pr.team = 0; pr.homeTarget = pr.owner && !pr.owner.dead ? pr.owner : c.target; pr.turn = 4;
+              pr.team = 0; pr.homeTarget = pr.owner && !pr.owner.dead ? pr.owner : null; pr.turn = 4;
               pr.vel.multiplyScalar(-1.3); pr.speed *= 1.3; pr.owner = c;
               B.sound.shieldHit(); B.ui.floatText(pr.pos, 'ОТРАЖЕНО', '#9fe8ff');
               hit = 'reflect';
