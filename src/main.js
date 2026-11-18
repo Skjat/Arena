@@ -37,6 +37,7 @@ class Game {
     this.haptics.enabled = this.save.settings.haptics;
     this.input = new Input(this);
     this.input.lefty = !!this.save.settings.lefty;
+    this.input.attackMode = this.save.settings.attackMode || 'swipe';
     this.ui = new UI(this);
     this.battle = null;
     this.paused = false;
@@ -212,6 +213,7 @@ class Game {
     this.arena.setVariant(opts.arena);
     this.camera.fov = 72; this.camera.updateProjectionMatrix(); this.resize();
     this.input.lefty = !!this.save.settings.lefty;
+    this.input.attackMode = this.save.settings.attackMode || 'swipe';
     this.battle = new Battle(this, this.save.fight, opts);
     this.input.setEnabled(true);
     this.paused = false;
@@ -349,6 +351,7 @@ class Game {
     if (key === 'haptics') { this.haptics.enabled = v; if (v) this.haptics.pulse(1); }
     if (key === 'quality') this.applyQuality();
     if (key === 'lefty') { this.input.lefty = v; document.body.classList.toggle('lefty', v); }
+    if (key === 'attackMode') { this.input.attackMode = v; document.body.classList.toggle('atk-btn', v === 'button'); }
     this.persist();
     this.ui.settings(this.ui.settingsBack);
   }

@@ -384,6 +384,7 @@ export class UI {
       <div class="scroll" style="flex:1; display:flex; justify-content:center"><div class="settings">
         <div class="set-row"><span>Звук</span>${seg('sound', [[true, 'Вкл'], [false, 'Выкл']])}</div>
         <div class="set-row"><span>Вибрация</span>${seg('haptics', [[true, 'Вкл'], [false, 'Выкл']])}</div>
+        <div class="set-row"><span>Удар</span>${seg('attackMode', [['swipe', 'Взмах пальцем'], ['button', 'Кнопка ⚔']])}</div>
         <div class="set-row"><span>Чувствительность обзора</span>${seg('sens', [[0.6, 'Низкая'], [1, 'Средняя'], [1.5, 'Высокая'], [2.2, 'Макс.']])}</div>
         <div class="set-row"><span>Графика</span>${seg('quality', [['auto', 'Авто'], ['low', 'Низк.'], ['medium', 'Средн.'], ['high', 'Выс.']])}</div>
         <div class="set-row"><span>Кровь</span>${seg('blood', [[0, 'Мало'], [1, 'Средне'], [2, 'Реки']])}</div>
@@ -399,8 +400,8 @@ export class UI {
       <div class="topbar"><button class="btn small" data-act="back" data-to="${back === 'prefight' ? 'menu' : back}">← Назад</button><h2>Как играть</h2><span></span></div>
       <div class="scroll" style="flex:1; display:flex; flex-direction:column; align-items:center"><div class="howto">
         <div class="card"><div class="nm">🕹 Движение</div>Левый палец — плавающий джойстик. «»» — рывок с неуязвимостью.</div>
-        <div class="card"><div class="nm">👁 Обзор — медленно ведите пальцем</div>Справа: медленное перетаскивание поворачивает камеру, вы целитесь сами. Держите палец и ведите — повернётесь, не опуская блок. ◎ — быстро развернуться к ближайшему врагу.</div>
-        <div class="card"><div class="nm">⚔ Удар — быстрый свайп</div>Резкий взмах пальцем справа — клинок пройдёт по этой линии. Режьте по шее — отрубите голову, по руке — руку. Чем быстрее свайп, тем сильнее удар.</div>
+        <div class="card"><div class="nm">👁 Обзор — ведите пальцем</div>Справа: ведите пальцем — камера поворачивается, вы целитесь сами. Подержите палец и ведите — повернётесь, не опуская блок. ◎ — быстро развернуться к ближайшему врагу.</div>
+        <div class="card"><div class="nm">⚔ Удар — резкий взмах</div>Короткий резкий взмах пальцем справа — клинок пройдёт по этой линии. Режьте по шее — отрубите голову, по руке — руку. Если удары путаются с обзором, включите в настройках «Удар: Кнопка ⚔» — тогда палец только поворачивает камеру, а бьёт кнопка (взмах от кнопки задаёт направление).</div>
         <div class="card"><div class="nm">🗡 Укол — тап</div>Короткое касание — колющий удар в точку. Копьё и кинжал колют особенно больно.</div>
         <div class="card"><div class="nm">🛡 Блок — удержание</div>Держите палец справа — блок. Нажмите в момент удара врага (оружие светится красным) — ПАРИРОВАНИЕ и оглушение врага.</div>
         <div class="card"><div class="nm">✦ Магия — руны</div>Нажмите кнопку руны: время замедлится. Нарисуйте символ: ↑ блинк, ○ щит, △ огненный шар, V толчок, Z молния, X лёд, S кровопийца, ☆ метеор.</div>
@@ -421,6 +422,7 @@ export class UI {
     this.hud.classList.remove('hidden');
     document.body.classList.add('in-battle');
     document.body.classList.toggle('lefty', !!this.game.save.settings.lefty);
+    document.body.classList.toggle('atk-btn', this.game.save.settings.attackMode === 'button');
     $('#countdown').textContent = '';
     $('#btn-target').style.display = 'flex';
     $('#enemy-dots').innerHTML = B.enemies.length > 1 ? B.enemies.map((e) => `<i class="${e.isAlly ? 'ally' : ''}"></i>`).join('') : '';

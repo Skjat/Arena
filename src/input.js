@@ -12,6 +12,7 @@ export class Input {
     this.joyKnob = document.getElementById('joy-knob');
     this.move = { x: 0, y: 0 };
     this.look = { x: 0, y: 0, mouse: false }; // накопленный поворот камеры (пиксели)
+    this.lookBuf = { x: 0, y: 0 };            // поворот, отложенный до распознавания жеста
     this.queue = [];
     this.ptrs = new Map();
     this.joy = null;
@@ -22,6 +23,7 @@ export class Input {
     this.fade = null;
     this.enabled = false;
     this.lefty = false;
+    this.attackMode = 'swipe'; // 'swipe' — удар взмахом, 'button' — кнопкой
     this.bind();
     this.resize();
   }
@@ -46,12 +48,14 @@ export class Input {
       this.keys.clear();
       this.updateKeyMove();
       this.look.x = 0; this.look.y = 0;
+      this.lookBuf.x = 0; this.lookBuf.y = 0;
       if (document.pointerLockElement) { try { document.exitPointerLock(); } catch (_) { /* ignore */ } }
     }
   }
 
   setRuneMode(on) {
     this.runeMode = on;
+    if (on && document.pointerLockElement) { try { document.exitPointerLock(); } catch (_) { /* ignore */ } }
     this.strokes = [];
     this.finalizeAt = 0;
     // активные касания атаки превращаются в «пустые»
@@ -86,6 +90,51 @@ export class Input {
     window.addEventListener('blur', () => { this.keys.clear(); this.updateKeyMove(); });
     // мышь с захватом указателя: обзор движением мыши
     window.addEventListener('mousemove', (e) => this.onMouseLook(e));
+    document.addEventListener('pointerlockerror', () => { this.lockFails = (this.lockFails || 0) + 1; });
+    document.addEventListener('pointerlockchange', () => { if (document.pointerLockElement) this.lockFails = 0; });
+    this.bindAttackButton();
+  }
+
+  // Пороги жестов, нормированные к телефону в альбомной ориентации.
+  gp() {
+    const W = window.innerWidth, H = window.innerHeight;
+    const k = Math.max(0.8, Math.min(1.8, Math.min(W, H) / 390));
+    return { W, H, slop: 8 * k, thr: 30 * k, vSwipe: 1.1 * k };
+  }
+
+  // Скорость пальца (px/мс) за последние ms миллисекунд.
+  speedOver(p, ms) {
+    const sm = p.samples, cur = sm[sm.length - 1];
+    let ref = sm[0];
+    for (let k = sm.length - 2; k >= 0; k--) { if (cur.t - sm[k].t >= ms) { ref = sm[k]; break; } }
+    const dt = Math.max(8, cur.t - ref.t);
+    return Math.hypot(cur.x - ref.x, cur.y - ref.y) / dt;
+  }
+
+  addLook(p, dx, dy) {
+    this.look.x += dx; this.look.y += dy;
+    if (p.lookAcc) { p.lookAcc.x += dx; p.lookAcc.y += dy; }
+  }
+
+  // Удар по линии: из точки S в направлении (dirx, diry).
+  fireSwing(S, dirx, diry, speed) {
+    const { W, H } = this.gp();
+    let maxT = W * 0.55;
+    // обрезать по краю экрана
+    const tx = dirx > 0 ? (W - S.x) / dirx : dirx < 0 ? -S.x / dirx : Infinity;
+    const ty = diry > 0 ? (H - S.y) / diry : diry < 0 ? -S.y / diry : Infinity;
+    maxT = Math.min(maxT, tx, ty);
+    let a = { x: S.x - dirx * W * 0.1, y: S.y - diry * W * 0.1 };
+    const b = { x: S.x + dirx * maxT, y: S.y + diry * maxT };
+    if (Math.hypot(b.x - a.x, b.y - a.y) < W * 0.3) a = { x: b.x - dirx * W * 0.32, y: b.y - diry * W * 0.32 };
+    this.push({ type: 'swing', a: this.ndc(a.x, a.y), b: this.ndc(b.x, b.y), speed });
+  }
+
+  // Удар через центр экрана (прицел) — для кнопки удара.
+  swingThroughCenter(dirx, diry, speed = 1) {
+    const { W, H } = this.gp();
+    const a = { x: W / 2 - dirx * W * 0.3, y: H / 2 - diry * W * 0.3 }, b = { x: W / 2 + dirx * W * 0.3, y: H / 2 + diry * W * 0.3 };
+    this.push({ type: 'swing', a: this.ndc(a.x, a.y), b: this.ndc(b.x, b.y), speed });
   }
 
   onDown(e) {
@@ -104,15 +153,24 @@ export class Input {
     }
     if (e.pointerType === 'mouse') {
       // первый клик захватывает мышь для обзора (если браузер позволяет)
-      if (!document.pointerLockElement && !this.lockRefused) {
-        try {
-          const r = this.el.requestPointerLock();
-          if (r && r.catch) r.catch(() => { this.lockRefused = true; });
-        } catch (_) { this.lockRefused = true; }
-        if (!this.lockRefused) return;
+      const canLock = !!this.el.requestPointerLock && (this.lockFails || 0) < 2;
+      if (!document.pointerLockElement && canLock) {
+        if (!this.lockPending) {
+          this.lockPending = true;
+          try {
+            const r = this.el.requestPointerLock();
+            if (r && r.catch) r.catch(() => {});
+          } catch (_) { this.lockFails = 2; }
+          setTimeout(() => {
+            this.lockPending = false;
+            if (!document.pointerLockElement) this.lockFails = (this.lockFails || 0) + 1;
+          }, 350);
+        }
+        return;
       }
       if (e.button === 2) {
-        this.ptrs.set(e.pointerId, { role: 'block' });
+        // ПКМ: блок; без захвата мыши перетаскивание ещё и поворачивает камеру
+        this.ptrs.set(e.pointerId, { role: 'block', lx: x, ly: y });
         this.push({ type: 'press' });
         return;
       }
@@ -131,7 +189,11 @@ export class Input {
       this.joyKnob.style.transform = 'translate(-50%,-50%)';
       return;
     }
-    const p = { role: 'attack', sx: x, sy: y, ax: x, ay: y, lx: x, ly: y, t: performance.now(), swung: false, lastDir: null, mode: 'pending' };
+    const now = performance.now();
+    const p = {
+      role: 'attack', sx: x, sy: y, ax: x, ay: y, lx: x, ly: y, t: now, swung: false, lastDir: null, mode: 'pending',
+      samples: [{ t: now, x, y }], moveT: 0, heldBefore: 0, lookAcc: { x: 0, y: 0 }, lastT: now
+    };
     this.ptrs.set(e.pointerId, p);
     this.push({ type: 'press' });
   }
@@ -158,58 +220,74 @@ export class Input {
       if (Math.hypot(x - last.x, y - last.y) > 3) { p.stroke.push({ x, y }); this.redraw(); }
       return;
     }
-    if (p.role === 'mattack') return;
-    if (p.role === 'attack') {
-      const W = window.innerWidth, H = window.innerHeight;
-      const thr = Math.max(30, Math.min(W, H) * 0.075);
-      const now = performance.now();
-      // медленное перетаскивание — поворот камеры
-      if (p.mode === 'look') {
-        this.look.x += x - p.lx; this.look.y += y - p.ly;
-        p.lx = x; p.ly = y;
+    if (p.role === 'block') {
+      if (!document.pointerLockElement) { this.look.x += x - p.lx; this.look.y += y - p.ly; }
+      p.lx = x; p.ly = y;
+      return;
+    }
+    if (p.role !== 'attack') return;
+    const G = this.gp();
+    const now = performance.now();
+    p.samples.push({ t: now, x, y });
+    if (p.samples.length > 14) p.samples.shift();
+
+    // --- обзор: камера следует за пальцем
+    if (p.mode === 'look') {
+      this.addLook(p, x - p.lx, y - p.ly);
+      p.lx = x; p.ly = y;
+      return;
+    }
+
+    // --- ещё не решено: по умолчанию это обзор, удар — только резкий взмах с места
+    if (p.mode === 'pending') {
+      const d0 = Math.hypot(x - p.sx, y - p.sy);
+      if (d0 < G.slop) return;
+      if (!p.moveT) { p.moveT = now; p.heldBefore = now - p.t; }
+      // пока жест не распознан, поворот копится в буфере (иначе камера дёргалась бы перед каждым ударом)
+      p.lookAcc.x += x - p.lx; p.lookAcc.y += y - p.ly;
+      p.lx = x; p.ly = y;
+      const sinceMove = now - p.moveT;
+      const swipeOk = this.attackMode !== 'button' && p.heldBefore < 220;
+      const v = this.speedOver(p, 60);
+      const toLook = () => {
+        p.mode = 'look';
+        // накопленный поворот плавно отдаётся камере
+        this.lookBuf.x += p.lookAcc.x; this.lookBuf.y += p.lookAcc.y;
+        // короткое касание без паузы — чистый обзор; после удержания — блок с поворотом
+        if (p.heldBefore < 250) this.push({ type: 'release' });
+      };
+      if (!swipeOk) { toLook(); return; }
+      if (d0 >= G.thr) {
+        if (sinceMove <= 170 && v >= G.vSwipe) {
+          // резкий взмах с места — удар вдоль движения пальца, камера не поворачивается
+          p.mode = 'swiped';
+          const dx = x - p.sx, dy = y - p.sy;
+          this.fireSwing({ x: p.sx, y: p.sy }, dx / d0, dy / d0, Math.min(1.5, v / (G.vSwipe * 2)));
+          p.swung = true;
+          p.lastDir = { x: dx / d0, y: dy / d0 };
+          p.ax = x; p.ay = y; p.lastT = now;
+        } else toLook();
+      } else if (sinceMove > 110 || (sinceMove > 45 && v < G.vSwipe * 0.5)) toLook();
+      return;
+    }
+
+    // --- после взмаха: смена направления на скорости — следующий удар серии; замедление — обзор
+    if (p.mode === 'swiped') {
+      const v = this.speedOver(p, 60);
+      if (v < G.vSwipe * 0.4 && now - p.lastT > 140) {
+        p.mode = 'look'; p.lx = x; p.ly = y;
         return;
       }
       const dx = x - p.ax, dy = y - p.ay;
       const L = Math.hypot(dx, dy);
-      if (p.mode === 'pending') {
-        const elapsed = now - p.t;
-        const d0 = Math.hypot(x - p.sx, y - p.sy);
-        if (L < thr || elapsed > 150) {
-          if (d0 >= 12 && elapsed > 150) {
-            p.mode = 'look';
-            // быстро зажатый палец без паузы — чистый обзор; после паузы — блок + обзор
-            if (elapsed < 280) this.push({ type: 'release' });
-            this.look.x += x - p.sx; this.look.y += y - p.sy;
-            p.lx = x; p.ly = y;
-          }
-          return;
-        }
-        p.mode = 'swiped';
-      }
-      if (L >= thr) {
-        const dirx = dx / L, diry = dy / L;
-        // цепочка свайпов одним пальцем: новый удар при смене направления
-        if (p.swung) {
-          const dot = p.lastDir ? p.lastDir.x * dirx + p.lastDir.y * diry : 0;
-          if (dot > 0.4) { p.ax = x; p.ay = y; return; }
-          if (L < thr * 1.6) return;
-        }
-        const dtms = Math.max(16, performance.now() - (p.lastT || p.t));
-        const speed = Math.min(1.5, (L / dtms) * 1000 / (W * 1.5));
-        const S = { x: p.ax, y: p.ay };
-        let maxT = W * 0.55;
-        // обрезать по краю экрана
-        const tx = dirx > 0 ? (W - S.x) / dirx : dirx < 0 ? -S.x / dirx : Infinity;
-        const ty = diry > 0 ? (H - S.y) / diry : diry < 0 ? -S.y / diry : Infinity;
-        maxT = Math.min(maxT, tx, ty);
-        let a = { x: S.x - dirx * W * 0.1, y: S.y - diry * W * 0.1 };
-        const b = { x: S.x + dirx * maxT, y: S.y + diry * maxT };
-        if (Math.hypot(b.x - a.x, b.y - a.y) < W * 0.3) a = { x: b.x - dirx * W * 0.32, y: b.y - diry * W * 0.32 };
-        this.push({ type: 'swing', a: this.ndc(a.x, a.y), b: this.ndc(b.x, b.y), speed });
-        p.swung = true;
-        p.lastDir = { x: dirx, y: diry };
-        p.ax = x; p.ay = y; p.lastT = performance.now();
-      }
+      if (L < G.thr) return;
+      const dirx = dx / L, diry = dy / L;
+      const dot = p.lastDir ? p.lastDir.x * dirx + p.lastDir.y * diry : 0;
+      if (dot > 0.4) { p.ax = x; p.ay = y; return; }
+      if (L < G.thr * 1.6 || v < G.vSwipe) return;
+      this.fireSwing({ x: p.ax, y: p.ay }, dirx, diry, Math.min(1.5, v / (G.vSwipe * 2)));
+      p.lastDir = { x: dirx, y: diry };
+      p.ax = x; p.ay = y; p.lastT = now;
     }
   }
 
@@ -226,14 +304,49 @@ export class Input {
     }
     if (p.role === 'attack') {
       const dt = performance.now() - p.t;
-      const moved = Math.hypot(e.clientX - p.sx, e.clientY - p.sy);
-      if (!p.swung && p.mode !== 'look' && dt < 260 && moved < 30) this.push({ type: 'thrust', p: this.ndc(p.sx, p.sy) });
+      // укол — только чистый тап: палец не сдвигался
+      if (p.mode === 'pending' && !p.moveT && dt < 260) this.push({ type: 'thrust', p: this.ndc(p.sx, p.sy) });
+      // короткий сдвиг, отпущенный до распознавания, — это тоже поворот камеры
+      if (p.mode === 'pending' && p.moveT) { this.lookBuf.x += p.lookAcc.x; this.lookBuf.y += p.lookAcc.y; }
       this.push({ type: 'release' });
     }
     if (p.role === 'mattack') {
       if (!p.swung && performance.now() - p.t < 280) this.push({ type: 'thrust', p: { x: 0, y: 0 } });
       this.push({ type: 'release' });
     }
+  }
+
+  // Кнопка удара (режим «Кнопка»): тап — удар через прицел, взмах от кнопки — удар в эту сторону.
+  bindAttackButton() {
+    const btn = document.getElementById('btn-attack');
+    if (!btn) return;
+    let st = null;
+    this.autoDir = 0;
+    btn.addEventListener('pointerdown', (e) => {
+      e.preventDefault(); e.stopPropagation();
+      this.game.sound.unlock();
+      try { btn.setPointerCapture(e.pointerId); } catch (_) { /* ignore */ }
+      st = { id: e.pointerId, x: e.clientX, y: e.clientY, swung: false };
+      btn.classList.add('pressed');
+    });
+    btn.addEventListener('pointermove', (e) => {
+      if (!st || e.pointerId !== st.id || st.swung) return;
+      const dx = e.clientX - st.x, dy = e.clientY - st.y, L = Math.hypot(dx, dy);
+      if (L >= 22) { this.swingThroughCenter(dx / L, dy / L, 1.1); st.swung = true; }
+    });
+    const up = (e) => {
+      if (!st || e.pointerId !== st.id) return;
+      btn.classList.remove('pressed');
+      if (!st.swung) {
+        // чередование направлений: справа налево, слева направо, наискось, сверху
+        const dirs = [[-1, 0.18], [1, 0.18], [-0.75, 0.66], [0.75, 0.66], [0.05, 1]];
+        const d = dirs[this.autoDir++ % dirs.length], L = Math.hypot(d[0], d[1]);
+        this.swingThroughCenter(d[0] / L, d[1] / L, 0.9);
+      }
+      st = null;
+    };
+    btn.addEventListener('pointerup', up);
+    btn.addEventListener('pointercancel', up);
   }
 
   // Мышь в режиме захвата: обзор, а с зажатой ЛКМ — быстрый рывок мыши = удар.
@@ -308,6 +421,14 @@ export class Input {
       const tx = (K.has('ArrowRight') || K.has('KeyL') ? 1 : 0) - (K.has('ArrowLeft') || K.has('KeyJ') ? 1 : 0);
       const ty = (K.has('ArrowDown') || K.has('KeyK') ? 1 : 0) - (K.has('ArrowUp') || K.has('KeyI') ? 1 : 0);
       this.look.x += tx * 520 * rdt; this.look.y += ty * 300 * rdt;
+    }
+    // отдать камере отложенный поворот (за ~3 кадра, без рывка)
+    const lb = this.lookBuf;
+    if (lb.x || lb.y) {
+      const k = Math.min(1, rdt * 28);
+      this.look.x += lb.x * k; this.look.y += lb.y * k;
+      lb.x -= lb.x * k; lb.y -= lb.y * k;
+      if (Math.abs(lb.x) < 0.3 && Math.abs(lb.y) < 0.3) { this.look.x += lb.x; this.look.y += lb.y; lb.x = 0; lb.y = 0; }
     }
     if (this.runeMode && this.finalizeAt && performance.now() >= this.finalizeAt) {
       this.finalizeAt = 0;

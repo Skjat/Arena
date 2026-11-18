@@ -14,7 +14,7 @@ export function defaultSave() {
     spells: { blink: 1, shield: 1 },
     upgrades: { manaPool: 0, manaFlow: 0, vitality: 0 },
     stats: { kills: 0, decapitations: 0, dismemberments: 0, deaths: 0, parries: 0, gibbed: 0 },
-    settings: { sound: true, haptics: true, quality: 'auto', lefty: false, blood: 2, sens: 1 },
+    settings: { sound: true, haptics: true, quality: 'auto', lefty: false, blood: 2, sens: 1, attackMode: 'swipe' },
     prefs: { arena: 'colosseum', format: 'duel' },
     seenTutorial: false
   };
