@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Арена крови">
+  <meta name="application-name" content="Арена крови">
+  <meta name="theme-color" content="#0d0a0a">
+  <meta name="format-detection" content="telephone=no">
+  <meta name="description" content="Кровавые поединки на арене: оружие, магия рун и рэгдолл-физика.">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="icon" type="image/png" href="icons/icon-192.png">
+  <title>Арена крови</title>
+  <link rel="stylesheet" href="style.css">
+  <script type="importmap">{ "imports": { "three": "./vendor/three.module.min.js" } }</script>
+</head>
+<body>
+  <canvas id="gl"></canvas>
+  <div id="touch"></div>
+  <canvas id="fx2d"></canvas>
+
+  <div id="screen-fx">
+    <div id="vignette"></div>
+    <div id="hurt"></div>
+    <div id="shield-fx"></div>
+    <div id="frost-fx"></div>
+    <div id="flash"></div>
+    <div id="rune-fx"></div>
+    <div id="blood-screen"></div>
+  </div>
+  <canvas id="rune-canvas"></canvas>
+
+  <div id="hud" class="hidden">
+    <div id="bars">
+      <div class="bar hp"><div class="fill"></div><div class="lag"></div><span></span></div>
+      <div class="bar mana"><div class="fill"></div><span></span></div>
+      <div class="bar stam"><div class="fill"></div></div>
+    </div>
+    <div id="target">
+      <div class="tname"></div>
+      <div class="bar ehp"><div class="lag"></div><div class="fill"></div><div class="eshield"></div></div>
+      <div class="tstatus"></div>
+    </div>
+    <div id="enemy-dots"></div>
+    <button id="btn-pause" class="hbtn" aria-label="Пауза">❚❚</button>
+    <button id="btn-target" class="hbtn" aria-label="Сменить цель">◎</button>
+    <button id="btn-dash" class="hbtn round" aria-label="Рывок">»</button>
+    <button id="btn-rune" class="hbtn round big" aria-label="Руна">
+      <svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="40" fill="none" stroke="currentColor" stroke-width="5"/><path d="M50 16 L72 72 L28 72 Z M50 16 L50 84" fill="none" stroke="currentColor" stroke-width="6" stroke-linejoin="round"/></svg>
+      <div class="mana-ring"></div>
+    </button>
+    <div id="crosshair"></div>
+    <div id="combo"></div>
+    <div id="center-text"></div>
+    <div id="countdown"></div>
+    <div id="rune-panel">
+      <div class="rune-hint">Нарисуйте руну</div>
+      <div class="rune-list"></div>
+      <button id="btn-rune-cancel" class="hbtn">✕</button>
+    </div>
+    <div id="spell-name"></div>
+    <div id="joy-hint"></div>
+  </div>
+  <div id="joy-base"><div id="joy-knob"></div></div>
+
+  <div id="screens"></div>
+
+  <div id="rotate"><div class="phone">📱</div><p>Поверните телефон горизонтально</p></div>
+  <div id="loading"><div class="logo">АРЕНА КРОВИ</div><div class="spin"></div><p id="load-msg">Загрузка…</p></div>
+
+  <noscript>Для игры нужен JavaScript.</noscript>
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
