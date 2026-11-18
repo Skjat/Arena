@@ -51,6 +51,10 @@ class Game {
       else if (!document.hidden && this.sound.ctx) this.sound.ctx.resume();
     });
     window.__game = this;
+    document.getElementById('btn-portrait').addEventListener('click', () => {
+      document.body.classList.add('portrait-ok');
+      this.resize();
+    });
     this.ui.menu();
     requestAnimationFrame((t) => this.loop(t));
   }
@@ -346,8 +350,12 @@ function boot() {
   }
 }
 
-if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-  window.addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(() => {}); });
-}
+try {
+  if ('serviceWorker' in navigator && location.protocol !== 'file:' && !window.__NO_SW) {
+    window.addEventListener('load', () => {
+      try { navigator.serviceWorker.register('sw.js').catch(() => {}); } catch (e) { /* песочница */ }
+    });
+  }
+} catch (e) { /* нет доступа к service worker */ }
 
 boot();

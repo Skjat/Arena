@@ -206,7 +206,8 @@ h2 { font-family: var(--title); color: var(--gold2); letter-spacing: 3px; margin
 #rotate { position: fixed; inset: 0; z-index: 20; background: #0d0a0a; display: none; flex-direction: column; align-items: center; justify-content: center; text-align: center; font-family: var(--title); color: var(--gold2); letter-spacing: 2px; }
 #rotate .phone { font-size: 64px; animation: rot 1.8s infinite ease-in-out; }
 @keyframes rot { 50% { transform: rotate(-90deg); } }
-@media (orientation: portrait) { body.in-battle #rotate { display: flex; } }
+@media (orientation: portrait) { body.in-battle:not(.portrait-ok) #rotate { display: flex; } }
+#rotate .btn { margin-top: 18px; }
 
 #loading { position: fixed; inset: 0; z-index: 30; background: #0d0a0a; display: flex; flex-direction: column; align-items: center; justify-content: center; transition: opacity 0.5s; }
 #loading .logo { font-family: var(--title); font-size: 40px; letter-spacing: 6px; color: var(--gold2); text-shadow: 0 0 20px rgba(200,20,20,0.8); }
