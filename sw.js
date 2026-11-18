@@ -1,5 +1,5 @@
 // Service worker: офлайн-кэш всех файлов игры.
-const VERSION = 'arena-v1';
+const VERSION = 'arena-v2';
 const FILES = [
   './', './index.html', './style.css', './manifest.webmanifest',
   './vendor/three.module.min.js',

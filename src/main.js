@@ -51,6 +51,10 @@ class Game {
       else if (!document.hidden && this.sound.ctx) this.sound.ctx.resume();
     });
     window.__game = this;
+    // iOS разблокирует звук только на touchend/click
+    const unlock = () => this.sound.unlock();
+    document.addEventListener('touchend', unlock, { passive: true });
+    document.addEventListener('click', unlock);
     document.getElementById('btn-portrait').addEventListener('click', () => {
       document.body.classList.add('portrait-ok');
       this.resize();
