@@ -120,11 +120,3 @@ export class Ragdoll {
     } else this.still = 0;
   }
 }
-
-// Частицы-обломки (куски тел, лёд) — простая физика с вращением.
-export class Debris {
-  constructor() { this.items = []; }
-  add(pos, vel, size, spin) {
-    this.items.push({ p: pos.clone(), v: vel.clone(), s: size, rot: new THREE.Euler(Math.random() * 6, Math.random() * 6, Math.random() * 6), spin: spin.clone(), life: 0 });
-  }
-}

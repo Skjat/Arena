@@ -254,13 +254,15 @@ export class Arena {
   updateCrowd(t, dt) {
     if (!this.crowd) return;
     this.excitement = Math.max(0.15, this.excitement - dt * 0.15);
-    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3();
+    const m = this._m || (this._m = new THREE.Matrix4()), q = this._q || (this._q = new THREE.Quaternion());
+    const s = this._s || (this._s = new THREE.Vector3()), p = this._p || (this._p = new THREE.Vector3());
+    const up = this._up || (this._up = new THREE.Vector3(0, 1, 0));
     const e = this.excitement;
     for (let i = 0; i < this.crowdData.length; i++) {
       const c = this.crowdData[i];
       const jump = Math.max(0, Math.sin(t * (4 + e * 6) + c.ph)) * c.amp * (0.3 + e * 4);
       p.set(c.x, c.y + jump, c.z);
-      q.setFromAxisAngle(new THREE.Vector3(0, 1, 0), c.rot);
+      q.setFromAxisAngle(up, c.rot);
       s.setScalar(c.s);
       m.compose(p, q, s);
       this.crowd.setMatrixAt(i, m);

@@ -99,6 +99,10 @@ export class Enemy {
     this.knockT = 0;
     this.time = 0;
     this.lastHitT = -10;
+    this.maxPoise = Math.round(A.hp * 0.32 * (def.boss ? 1.7 : 1) + lvl * 1.5);
+    this.poise = this.maxPoise;
+    this.poiseT = 0;
+    this.recentHits = 0;
     this.arm = { h: guardPose(this.wkind).h.clone(), d: guardPose(this.wkind).d.clone(), l: V(0.24, 1.0, 0.2) };
     this.voicePitch = 0.8 + Math.random() * 0.4 - (A.look.bulk ? 0.15 : 0);
     // руна над головой
@@ -127,6 +131,8 @@ export class Enemy {
   get busy() { return this.state === 'attack' || this.state === 'cast' || this.state === 'stagger' || this.state === 'knock' || this.state === 'getup' || this.status.frozen > 0 || this.status.stun > 0; }
 
   get canFight() { return !this.dead && !this.ch.severed.has('rarm') && !this.ch.severed.has('rfore'); }
+
+  get leftOk() { return !this.ch.severed.has('larm') && !this.ch.severed.has('lfore'); }
 
   toPlayer() {
     const p = this.battle.player.pos;
@@ -157,7 +163,8 @@ export class Enemy {
       this.state = 'dodge'; this.stateT = 0.28;
       return;
     }
-    const chance = this.arch.block * (0.6 + this.skill * 0.6) * (weaponSlow > 0.35 ? 1.3 : weaponSlow < 0.25 ? 0.4 : 1);
+    const turtle = this.arch.block > 0.1 ? Math.min(0.45, this.recentHits * 0.15) : 0;
+    const chance = this.arch.block * (0.6 + this.skill * 0.6) * (weaponSlow > 0.35 ? 1.3 : weaponSlow < 0.25 ? 0.4 : 1) + turtle;
     if (this.state !== 'attack' && Math.random() < chance && this.canFight) {
       setTimeout(() => { if (!this.dead && !this.busy) this.startBlock(0.5 + Math.random() * 0.4); }, Math.max(0, this.arch.react * (1.2 - this.skill * 0.5) * 1000 * 0.5));
     }
@@ -191,6 +198,10 @@ export class Enemy {
       }
       return;
     }
+    // восстановление стойки
+    this.recentHits = Math.max(0, this.recentHits - dt * 0.7);
+    if (this.poiseT > 0) this.poiseT -= dt;
+    else this.poise = Math.min(this.maxPoise, this.poise + this.maxPoise * 0.4 * dt);
     // статусы
     const S = this.status;
     if (S.burn > 0) {
@@ -278,9 +289,13 @@ export class Enemy {
     if (ready('shield') && !this.shield && (hpFrac < 0.6 || Math.random() < 0.15) && dist < 9) return this.startCast('shield');
     if (ready('drain') && hpFrac < 0.75 && dist < 9 && Math.random() < 0.5) return this.startCast('drain');
     if (!this.canFight) {
-      // без руки с оружием — только магия и бегство
-      for (const s of ['fireball', 'lightning', 'frost', 'push', 'meteor']) if (ready(s) && Math.random() < 0.6) return this.startCast(s);
-      this.state = 'flee';
+      // без руки с оружием — магия или кулак левой; без обеих рук — бегство
+      const leftOk = this.leftOk;
+      for (const s of ['fireball', 'lightning', 'frost', 'push', 'meteor']) if (leftOk && ready(s) && Math.random() < 0.5) return this.startCast(s);
+      if (!leftOk) { this.state = 'flee'; return; }
+      if (dist > 1.25) { this.state = 'approach'; return; }
+      if (Math.random() < 0.7) return this.startAttack();
+      this.state = 'strafe';
       return;
     }
     if (dist > reach + 0.35) {
@@ -310,7 +325,7 @@ export class Enemy {
     const dir = dist > 1e-4 ? toP.clone().divideScalar(dist) : V(0, 0, 1);
     const side = V(-dir.z, 0, dir.x).multiplyScalar(this.strafeDir);
     const speed = this.arch.speed * (this.status.slow > 0 ? 0.5 : 1) * (this.def.boss ? 1.05 : 1);
-    const reach = this.wtype.enemyReach * this.ch.scale;
+    const reach = this.canFight ? this.wtype.enemyReach * this.ch.scale : 1.1;
     let want = V(0, 0, 0);
     switch (this.state) {
       case 'approach': {
@@ -411,7 +426,8 @@ export class Enemy {
         rate = 5;
         A.lean = 0.1;
       }
-      if (this.wkind === 'spear' && at.type === 'thrust') { th.z += 0.12; }
+      if (this.wkind === 'spear' && at.type === 'thrust' && !at.unarmed) { th.z += 0.12; }
+      if (at.unarmed) { tl = V(-th.x, th.y, th.z); th = g.h.clone(); td = g.d.clone(); }
     } else if (st === 'block') {
       th.set(-0.12, 1.35, 0.36); td.set(1, 0.25, 0.15).normalize();
       if (this.wkind === 'spear') { td.set(0.85, 0.45, 0.2).normalize(); }
@@ -438,7 +454,7 @@ export class Enemy {
       A.lean = -0.05;
     }
     if (this.status.stun > 0) { A.lean = -0.2; }
-    if (!this.canFight) { tl = tl || V(0.2, 1.3, 0.3); }
+    if (!this.canFight && st !== 'attack' && st !== 'cast') { tl = V(0.16, 1.32, 0.3); }
     // левая рука на древке для двуручного
     if (!tl && st !== 'cast') tl = th.clone().addScaledVector(td, this.wkind === 'spear' ? 0.42 : 0.2);
     if (!tl) tl = V(0.24, 1.0, 0.2);
@@ -461,15 +477,16 @@ export class Enemy {
 
   // ===== Атака =====
   startAttack() {
-    if (!this.canFight) return;
-    const set = ATTACK_SETS[this.wkind];
+    const unarmed = !this.canFight;
+    if (unarmed && !this.leftOk) return;
+    const set = unarmed ? ['thrust', 'slashR'] : ATTACK_SETS[this.wkind];
     const type = set[Math.floor(Math.random() * set.length)];
     const speedK = 1 - this.skill * 0.25;
     this.attack = {
-      type, phase: 'windup', t: 0,
-      windup: this.wtype.windup * speedK * (0.85 + Math.random() * 0.3),
-      strike: this.wtype.strike,
-      recover: this.wtype.recover * (1.2 - this.skill * 0.4),
+      type, phase: 'windup', t: 0, unarmed,
+      windup: unarmed ? 0.42 : this.wtype.windup * speedK * (0.85 + Math.random() * 0.3),
+      strike: unarmed ? 0.12 : this.wtype.strike,
+      recover: unarmed ? 0.45 : this.wtype.recover * (1.2 - this.skill * 0.4),
       hitDone: false,
       from: { h: this.arm.h.clone().divideScalar(this.ch.scale), d: this.arm.d.clone() }
     };
@@ -501,11 +518,11 @@ export class Enemy {
     const B = this.battle, P = B.player;
     if (P.dead) return;
     const dist = this.distToPlayer();
-    const reach = this.wtype.enemyReach * this.ch.scale + 0.35;
+    const reach = (at.unarmed ? 1.0 : this.wtype.enemyReach) * this.ch.scale + 0.35;
     if (dist > reach) return;
     if (this.facingDot() < Math.cos(1.0)) return;
     const K = ATTACKS[at.type];
-    const dmg = this.weaponItem.dmg * this.dmgScale * K.mult * (this.wkind === 'spear' && at.type === 'thrust' ? 1.2 : 1);
+    const dmg = at.unarmed ? 12 * this.dmgScale : this.weaponItem.dmg * this.dmgScale * K.mult * (this.wkind === 'spear' && at.type === 'thrust' ? 1.2 : 1);
     const dir = this.toPlayer().normalize();
     B.damagePlayer({ amount: dmg, dir, source: this, kind: 'melee', blockable: true, knock: this.wtype.knock * 0.6, guardBreak: this.wtype.guardBreak });
   }
@@ -513,7 +530,7 @@ export class Enemy {
   // ===== Магия =====
   startCast(spell) {
     const c = ENEMY_CAST[spell];
-    if (!c) return;
+    if (!c || !this.leftOk) return;
     this.spellCd[spell] = c.cd * (1.2 - this.skill * 0.3) + Math.random() * 2;
     this.cast = { spell, t: 0, dur: c.time * (1.1 - this.skill * 0.2) };
     this.state = 'cast';

@@ -290,7 +290,7 @@ export class Battle {
         const margin = e.dead ? 0.02 : 0.07;
         if (res.dist < c.r + margin) {
           // торс — «запасная» цель: мелкие части приоритетнее
-          const score = res.s * len + (c.part === 'torso' ? 0.3 : 0);
+          const score = res.s * len + (c.part === 'torso' ? 0.3 : c.part === 'head' ? 0.06 : 0);
           if (!best || score < best.score) {
             const point = _c2.clone().add(_c1.clone().sub(_c2).clampLength(0, c.r));
             best = { e, part: c.part, point, score };
@@ -445,6 +445,7 @@ export class Battle {
     const limb = part === 'larm' || part === 'rarm' || part === 'lfore' || part === 'rfore';
     if (limb && W.sever > 0 && dmg > 12 && Math.random() < W.sever * 0.55 * Math.min(1.4, dmg / 22)) {
       this.severPart(e, part, dir, 1);
+      if ((part === 'rarm' || part === 'rfore') && Math.random() < 0.6) this.ui.floatText(e.chest().add(V(0, 0.5, 0)), ['Это просто царапина!', 'Ерунда!', 'Я ещё не закончил!'][Math.floor(Math.random() * 3)], '#ffffff', 16);
       e.hp -= e.maxHp * 0.1;
       e.status.bleed = 8; e.status.bleedDps = Math.max(e.status.bleedDps, e.maxHp * 0.025);
       this.sound.voice(e.voicePitch, 'scream');
@@ -462,14 +463,18 @@ export class Battle {
     e.interrupt();
     e.ch.react(dir, 0.1 + Math.min(0.25, dmg / e.maxHp));
     e.knock = dir.clone().setY(0).multiplyScalar(W.knock * 0.5);
-    const heavyHit = dmg > e.maxHp * 0.22 || W === undefined;
-    if (W.knock >= 7 && (part === 'head' || Math.random() < 0.3) && kind !== 'thrust') {
+    // устойчивость (poise): лёгкие удары не сбивают атаку, пока не сломана стойка
+    e.poise -= dmg * (W.guardBreak ? 1.5 : 1) * (kind === 'thrust' ? 0.8 : 1) * (backstab ? 2 : 1);
+    e.poiseT = 1.2;
+    e.recentHits = (e.recentHits || 0) + 1;
+    if (W.knock >= 7 && (part === 'head' || e.poise <= 0) && kind !== 'thrust') {
+      e.poise = e.maxPoise;
       e.knockdown(dir.clone().setY(0).multiplyScalar(W.knock * 0.6).add(V(0, 2.5, 0)), PART_JOINT[part]);
-    } else if (heavyHit || W.guardBreak) {
-      if (e.state === 'attack' && e.attack && e.attack.phase === 'windup') { e.attack = null; }
-      e.stagger(0.45 + (heavyHit ? 0.3 : 0));
-    } else if (e.state === 'attack' && e.attack && e.attack.phase === 'windup' && Math.random() < 0.5) {
-      e.attack = null; e.stagger(0.3);
+    } else if (e.poise <= 0) {
+      e.poise = e.maxPoise;
+      e.attack = null;
+      e.stagger(0.5 + Math.min(0.4, dmg / e.maxHp));
+      this.ui.floatText(e.chest().add(V(0, 0.35, 0)), 'ОШЕЛОМЛЁН', '#ffaa33', 15);
     }
   }
 
@@ -712,7 +717,7 @@ export class Battle {
     this.haptics.pulse(1.5 + heavy);
     this.ui.hurt(heavy);
     if (o.kind === 'melee') { this.ui.screenBlood(0.5 + heavy * 0.3); this.sound.hit(heavy); this.fx.blood(V(P.pos.x, EYE - 0.4, P.pos.z), o.dir.clone().add(V(0, 0.3, 0)), 0.8, 3); }
-    if (o.kind === 'fire') { this.ui.flash('rgba(255,120,30,0.35)'); P.burn = 2; }
+    if (o.kind === 'fire') this.ui.flash('rgba(255,120,30,0.35)');
     if (o.kind === 'frost' || o.slow) { P.slowT = o.slow || 2; this.ui.frost(o.slow || 2); }
     if (o.kind === 'lightning') this.ui.flash('rgba(200,230,255,0.5)');
     if (o.knock) P.knock = o.dir.clone().setY(0).multiplyScalar(o.knock);

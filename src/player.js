@@ -134,10 +134,46 @@ export class Player {
   forward(out) { return out.set(-Math.sin(this.yaw), 0, -Math.cos(this.yaw)); }
   right(out) { return out.set(Math.cos(this.yaw), 0, -Math.sin(this.yaw)); }
 
+  // Помощь в прицеливании: линия удара сдвигается по горизонтали к цели,
+  // сохраняя высоту горизонтального реза (шея/торс/ноги).
+  assistLine(a, b) {
+    const t = this.target;
+    if (!t) return [a, b];
+    const c = t.chest().project(this.camera);
+    if (c.z > 1) return [a, b];
+    const asp = this.camera.aspect;
+    const A = { x: a.x * asp, y: a.y }, Bp = { x: b.x * asp, y: b.y }, C = { x: c.x * asp, y: c.y };
+    let dx = Bp.x - A.x, dy = Bp.y - A.y;
+    const L = Math.hypot(dx, dy) || 1;
+    const ux = dx / L, uy = dy / L;
+    let shift = 0;
+    if (Math.abs(uy) > 0.3) {
+      const tt = (C.y - A.y) / uy;
+      shift = C.x - (A.x + ux * tt);
+    }
+    shift = Math.max(-asp * 0.8, Math.min(asp * 0.8, shift));
+    A.x += shift; Bp.x += shift;
+    // линия должна пересекать цель
+    const tc = (C.x - A.x) * ux + (C.y - A.y) * uy;
+    const margin = 0.35;
+    if (tc < margin) { A.x -= ux * (margin - tc); A.y -= uy * (margin - tc); }
+    if (tc > L - margin) { Bp.x += ux * (tc - L + margin); Bp.y += uy * (tc - L + margin); }
+    return [{ x: A.x / asp, y: A.y }, { x: Bp.x / asp, y: Bp.y }];
+  }
+
+  assistPoint(p) {
+    const t = this.target;
+    if (!t) return p;
+    const c = t.chest().project(this.camera);
+    if (c.z > 1 || Math.abs(p.x - c.x) > 0.7) return p;
+    return { x: c.x + (p.x - c.x) * 0.15, y: p.y };
+  }
+
   // ===== Действия =====
   startSwing(a, b, speed) {
     if (this.dead) return;
     if (!this.canAct()) { this.buffer = { kind: 'swing', a, b, speed, t: 0 }; return; }
+    [a, b] = this.assistLine(a, b);
     const tired = this.stamina < this.wtype.stamina;
     this.stamina = Math.max(0, this.stamina - this.wtype.stamina);
     const dur = this.wtype.swing * (tired ? 1.35 : 1);
@@ -152,6 +188,7 @@ export class Player {
   startThrust(p) {
     if (this.dead) return;
     if (!this.canAct()) { this.buffer = { kind: 'thrust', p, t: 0 }; return; }
+    p = this.assistPoint(p);
     const tired = this.stamina < this.wtype.stamina;
     this.stamina = Math.max(0, this.stamina - this.wtype.stamina * 0.8);
     this.state = 'swing';
@@ -319,7 +356,8 @@ export class Player {
     this.updateCamera(dt);
     this.updateViewmodel(dt);
     // кровь на клинке медленно сохнет
-    setBloodiness(this.weapon.mats, Math.min(1, this.bloodOnBlade || 0));
+    this.bloodOnBlade = Math.max(0, (this.bloodOnBlade || 0) - dt * 0.01);
+    setBloodiness(this.weapon.mats, Math.min(1, this.bloodOnBlade));
   }
 
   updateCamera(dt) {

@@ -383,6 +383,7 @@ export class UI {
   // ===== HUD =====
   battleStart(B) {
     this.clear();
+    this.hudCache = null;
     this.hud.classList.remove('hidden');
     document.body.classList.add('in-battle');
     document.body.classList.toggle('lefty', !!this.game.save.settings.lefty);
@@ -416,19 +417,27 @@ export class UI {
 
   updateHud(B) {
     const P = B.player;
-    const set = (sel, k) => { $(sel).style.transform = `scaleX(${Math.max(0, Math.min(1, k))})`; };
-    const hpK = P.hp / P.maxHp;
+    const C = this.hudCache || (this.hudCache = { el: {}, v: {} });
+    const el = (sel) => C.el[sel] || (C.el[sel] = $(sel));
+    const set = (sel, k) => {
+      k = Math.max(0, Math.min(1, k));
+      if (Math.abs((C.v[sel] ?? -1) - k) < 0.002) return;
+      C.v[sel] = k;
+      el(sel).style.transform = `scaleX(${k.toFixed(3)})`;
+    };
+    const txt = (sel, t) => { if (C.v[sel + 't'] === t) return; C.v[sel + 't'] = t; el(sel).textContent = t; };
+    const hpK = Math.max(0, P.hp / P.maxHp);
     this.hp.lag += (hpK - this.hp.lag) * 0.04;
     if (this.hp.lag < hpK) this.hp.lag = hpK;
     set('#bars .hp .fill', hpK); set('#bars .hp .lag', this.hp.lag);
-    $('#bars .hp span').textContent = Math.ceil(Math.max(0, P.hp));
+    txt('#bars .hp span', String(Math.ceil(Math.max(0, P.hp))));
     set('#bars .mana .fill', P.mana / P.maxMana);
-    $('#bars .mana span').textContent = Math.floor(P.mana);
+    txt('#bars .mana span', String(Math.floor(P.mana)));
     set('#bars .stam .fill', P.stamina / P.maxStamina);
     const t = P.target;
-    const tEl = $('#target');
+    const tEl = el('#target');
     if (t) {
-      tEl.style.opacity = 1;
+      if (C.v.tvis !== 1) { tEl.style.opacity = 1; C.v.tvis = 1; }
       const name = `${t.name} <small>${t.title}</small>`;
       if (tEl.dataset.name !== name) { tEl.querySelector('.tname').innerHTML = name; tEl.dataset.name = name; this.hp.ehpLag = t.hp / t.maxHp; }
       const k = Math.max(0, t.hp / t.maxHp);
@@ -442,27 +451,34 @@ export class UI {
       if (t.status.stun > 0) st.push('⚡ оглушён');
       if (t.status.bleed > 0) st.push('🩸 кровоточит');
       if (t.state === 'cast' && t.cast) st.push('✦ колдует: ' + SPELLS[t.cast.spell].name);
-      tEl.querySelector('.tstatus').textContent = st.join('  ');
-    } else tEl.style.opacity = 0;
+      txt('#target .tstatus', st.join('  '));
+    } else if (C.v.tvis !== 0) { tEl.style.opacity = 0; C.v.tvis = 0; }
     if (B.enemies.length > 1) {
-      const dots = $('#enemy-dots').children;
-      B.enemies.forEach((e, i) => { if (dots[i]) dots[i].className = (e.dead ? 'dead' : '') + (e === t ? ' cur' : ''); });
+      const dots = el('#enemy-dots').children;
+      B.enemies.forEach((e, i) => { const cls = (e.dead ? 'dead' : '') + (e === t ? ' cur' : ''); if (dots[i] && dots[i].className !== cls) dots[i].className = cls; });
     }
     // мана на кнопке руны
-    $('#btn-rune').style.opacity = P.mana >= 15 ? 1 : 0.5;
-    $('#btn-rune').classList.toggle('active', B.runeMode);
+    const runeOp = P.mana >= 15 ? '1' : '0.5';
+    if (C.v.runeOp !== runeOp) { el('#btn-rune').style.opacity = runeOp; C.v.runeOp = runeOp; }
     // низкое здоровье
     const low = hpK < 0.3 && !P.dead;
+    let hurt = this.hurtLevel || 0;
     if (low) {
       const pulse = 0.35 + Math.sin(performance.now() / 180) * 0.15;
-      $('#hurt').style.opacity = Math.max(pulse * (1 - hpK / 0.3), this.hurtLevel || 0);
+      hurt = Math.max(pulse * (1 - hpK / 0.3), hurt);
       if (Math.sin(performance.now() / 180) > 0.97) B.sound.heartbeat();
-    } else $('#hurt').style.opacity = this.hurtLevel || 0;
+    }
+    if (P.dead) hurt = 0.9;
+    const hs = hurt.toFixed(2);
+    if (C.v.hurt !== hs) { el('#hurt').style.opacity = hs; C.v.hurt = hs; }
     this.hurtLevel = Math.max(0, (this.hurtLevel || 0) - 0.03);
     // комбо
-    const c = $('#combo');
-    if (B.combo >= 3) { c.style.opacity = 1; c.innerHTML = `${B.combo}×<small>комбо</small>`; } else c.style.opacity = 0;
-    if (P.dead) $('#hurt').style.opacity = 0.9;
+    const comboTxt = B.combo >= 3 ? `${B.combo}×<small>комбо</small>` : '';
+    if (C.v.combo !== comboTxt) {
+      C.v.combo = comboTxt;
+      const c = el('#combo');
+      if (comboTxt) { c.style.opacity = 1; c.innerHTML = comboTxt; } else c.style.opacity = 0;
+    }
   }
 
   centerText(text, cls = '') {

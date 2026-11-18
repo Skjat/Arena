@@ -61,7 +61,7 @@ export function makeMaterials(tierName) {
   });
   const grip = new THREE.MeshStandardMaterial({ color: tier.grip, roughness: 0.9, metalness: 0 });
   const fitting = new THREE.MeshStandardMaterial({ color: tier.glow ? 0x2a2a30 : 0x7a5a2a, metalness: 0.8, roughness: 0.35 });
-  return { blade, grip, fitting, baseBlade: new THREE.Color(tier.blade), baseEmissive: new THREE.Color(tier.glow || 0), glowIntensity: tier.glow ? 0.35 : 0 };
+  return { blade, grip, fitting, baseBlade: new THREE.Color(tier.blade), baseRough: tier.rough, baseEmissive: new THREE.Color(tier.glow || 0), glowIntensity: tier.glow ? 0.35 : 0 };
 }
 
 // Возвращает { group, mats, length, type }
@@ -133,5 +133,5 @@ export function buildWeapon(weaponId) {
 export function setBloodiness(mats, amount) {
   const blood = new THREE.Color(0x5a0505);
   mats.blade.color.copy(mats.baseBlade).lerp(blood, Math.min(0.75, amount));
-  mats.blade.roughness = Math.max(mats.blade.roughness, 0.15 + amount * 0.25);
+  mats.blade.roughness = Math.min(1, mats.baseRough + amount * 0.25);
 }

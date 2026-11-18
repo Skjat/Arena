@@ -142,7 +142,7 @@ export class Character {
     const std = (color, rough = 0.8, metal = 0) => new THREE.MeshStandardMaterial({ color, roughness: rough, metalness: metal });
     this.mats = {
       skin: std(L.skin, 0.7), cloth: std(L.cloth, 0.9), pants: std(L.pants, 0.9),
-      metal: std(L.metal || 0xb0b6bd, 0.3, 0.9), hair: std(L.hair, 0.95),
+      metal: std(L.metal || 0x8e949c, 0.42, 0.85), hair: std(L.hair, 0.95),
       leather: std(0x5a3a22, 0.85), dark: std(0x161616, 0.9),
       gold: std(0xc8a040, 0.35, 0.9), accent: std(L.accent || 0xa01010, 0.8)
     };
@@ -175,9 +175,12 @@ export class Character {
     // ---- Торс ----
     const torsoMat = top === 'bare' ? M.skin : top === 'plate' ? M.metal : top === 'chain' ? M.metal : top === 'leather' ? M.leather : M.cloth;
     const tw = 0.36 * s * b, th = d.spine, tdp = 0.21 * s * b;
-    this.addPart(S.torso, box(tw, th * 0.62, tdp), torsoMat, 0, th * 0.62, 0.0);
-    this.addPart(S.torso, box(tw * 0.86, th * 0.42, tdp * 0.9), top === 'bare' ? M.skin : (top === 'plate' ? M.cloth : torsoMat), 0, th * 0.2, 0);
-    this.addPart(S.torso, box(tw * 0.92, 0.07 * s, tdp * 1.04), M.leather, 0, 0.02 * s, 0); // пояс
+    // грудь — сужающийся «бочонок», живот, таз
+    const chest = geo('chest', () => { const g = new THREE.CylinderGeometry(0.5, 0.37, 1, 10, 1); g.scale(1, 1, 0.58); return g; });
+    const belly = geo('belly', () => { const g = new THREE.CylinderGeometry(0.37, 0.42, 1, 10, 1); g.scale(1, 1, 0.62); return g; });
+    this.addPart(S.torso, chest, torsoMat, 0, th * 0.66, 0, tw, th * 0.6, tw);
+    this.addPart(S.torso, belly, top === 'bare' ? M.skin : (top === 'plate' ? M.cloth : torsoMat), 0, th * 0.2, 0, tw, th * 0.42, tw);
+    this.addPart(S.torso, cyl(0.21, 0.21, 1, 10), M.leather, 0, 0.02 * s, 0, tw * 2.15, 0.075 * s, tw * 1.35); // пояс
     this.addPart(S.torso, box(tw * 0.62, 0.05 * s, 0.02), M.gold, 0, 0.02 * s, tdp * 0.53);
     if (top === 'bare') {
       // грудные мышцы и ремень через плечо
@@ -187,15 +190,16 @@ export class Character {
       strap.rotation.z = 0.6;
     }
     if (top === 'plate') {
-      this.addPart(S.torso, box(tw * 1.04, th * 0.4, tdp * 1.08), M.metal, 0, th * 0.72, 0.01);
+      this.addPart(S.torso, chest, M.metal, 0, th * 0.7, 0.008, tw * 1.07, th * 0.5, tw * 1.1);
       this.addPart(S.torso, sphere(0.1 * s * b, 10, 6), M.metal, d.shW * 0.95, th * 0.95, 0, 1, 0.75, 1);
       this.addPart(S.torso, sphere(0.1 * s * b, 10, 6), M.metal, -d.shW * 0.95, th * 0.95, 0, 1, 0.75, 1);
     }
     if (top === 'chain') {
-      this.addPart(S.torso, box(tw * 1.03, th * 0.7, tdp * 1.05), M.metal, 0, th * 0.5, 0);
+      this.addPart(S.torso, chest, M.metal, 0, th * 0.6, 0, tw * 1.05, th * 0.75, tw * 1.06);
     }
     if (top === 'leather') {
       this.addPart(S.torso, sphere(0.085 * s * b, 10, 6), M.leather, d.shW * 0.95, th * 0.93, 0, 1, 0.7, 1);
+      this.addPart(S.torso, sphere(0.085 * s * b, 10, 6), M.leather, -d.shW * 0.95, th * 0.93, 0, 1, 0.7, 1);
       this.addPart(S.torso, box(tw * 0.5, th * 0.3, 0.03), M.cloth, 0, th * 0.65, tdp * 0.52);
     }
     if (top === 'robe') {
@@ -532,15 +536,15 @@ export class Character {
     if (!this.severed.has('head')) {
       add('head', P[J.HEAD], P[J.HEAD], 0.135 * s);
       const neckTop = new THREE.Vector3().lerpVectors(P[J.NECK], P[J.HEAD], 0.5);
-      add('neck', P[J.NECK], neckTop, 0.085 * s);
+      add('neck', P[J.NECK], neckTop, 0.1 * s);
     }
     const tb = new THREE.Vector3().lerpVectors(P[J.PELVIS], P[J.NECK], 0.08);
-    const tt = new THREE.Vector3().lerpVectors(P[J.PELVIS], P[J.NECK], 0.78);
-    add('torso', tb, tt, 0.18 * s * b);
+    const tt = new THREE.Vector3().lerpVectors(P[J.PELVIS], P[J.NECK], 0.68);
+    add('torso', tb, tt, 0.17 * s * b);
     const arm = (side) => {
       const sh = side === 'l' ? J.LSH : J.RSH, el = side === 'l' ? J.LEL : J.REL, ha = side === 'l' ? J.LHA : J.RHA;
       if (!this.severed.has(side + 'arm')) {
-        add(side + 'arm', P[sh], P[el], 0.06 * s * b);
+        add(side + 'arm', new THREE.Vector3().lerpVectors(P[sh], P[el], 0.22), P[el], 0.06 * s * b);
         if (!this.severed.has(side + 'fore')) add(side + 'fore', P[el], P[ha], 0.055 * s * b);
       }
     };
