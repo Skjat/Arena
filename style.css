@@ -34,7 +34,7 @@ button { font: inherit; color: inherit; touch-action: manipulation; }
 #screen-fx > div { position: absolute; inset: 0; }
 #rune-canvas { position: fixed; inset: 0; width: 100%; height: 100%; z-index: 4; pointer-events: none; display: none; }
 
-#vignette { background: radial-gradient(ellipse at center, transparent 55%, rgba(0,0,0,0.55) 100%); }
+#vignette { display: none; }
 #hurt { background: radial-gradient(ellipse at center, transparent 35%, rgba(170, 0, 0, 0.75) 100%); opacity: 0; transition: opacity 0.15s; }
 #shield-fx { box-shadow: inset 0 0 90px 20px rgba(110, 200, 255, 0.45); opacity: 0; transition: opacity 0.3s; border-radius: 30px; }
 #shield-fx.on { opacity: 1; animation: shieldpulse 1.6s infinite ease-in-out; }

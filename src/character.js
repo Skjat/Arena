@@ -2,9 +2,10 @@
 import * as THREE from 'three';
 import { Ragdoll } from './physics.js';
 import { buildWeapon } from './weapons3d.js';
+import { J, NJ } from './joints.js';
+import { buildBody, FLESH_MAT, FOOT_REST, SPINE_SPLIT } from './body.js';
 
-export const J = { HEAD: 0, NECK: 1, PELVIS: 2, LSH: 3, RSH: 4, LEL: 5, REL: 6, LHA: 7, RHA: 8, LHIP: 9, RHIP: 10, LKN: 11, RKN: 12, LFT: 13, RFT: 14 };
-export const NJ = 15;
+export { J, NJ };
 
 const BONES = [
   [J.HEAD, J.NECK], [J.NECK, J.PELVIS], [J.NECK, J.LSH], [J.NECK, J.RSH], [J.LSH, J.RSH],
@@ -45,6 +46,11 @@ export const SEVER = {
 };
 
 const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3();
+const _a = new THREE.Vector3(), _b = new THREE.Vector3(), _cv = new THREE.Vector3(), _zc = new THREE.Vector3(), _zh = new THREE.Vector3();
+const _fwd = new THREE.Vector3(), _up = new THREE.Vector3(), _hd = new THREE.Vector3(), _hz = new THREE.Vector3(), _wd = new THREE.Vector3(), _pole = new THREE.Vector3();
+const _q = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _e = new THREE.Euler(), _c2 = new THREE.Color();
+const X_AXIS = new THREE.Vector3(1, 0, 0), Z_AXIS = new THREE.Vector3(0, 0, 1);
+const REACT_W = [1.25, 0.8, 0.05, 0.75, 0.75, 0.6, 0.6, 0.45, 0.45, 0, 0, 0, 0, 0, 0];
 const _m = new THREE.Matrix4();
 const _c = new THREE.Color();
 const UP = new THREE.Vector3(0, 1, 0);
@@ -83,19 +89,7 @@ export function orient(group, A, B, zRef, outZ) {
   if (outZ) outZ.copy(z);
 }
 
-// ===== Геометрии (кэш) =====
-const G = new Map();
-function geo(key, fn) { if (!G.has(key)) G.set(key, fn()); return G.get(key); }
-function capsule(r, len) { return geo(`cap${r.toFixed(3)}_${len.toFixed(3)}`, () => { const g = new THREE.CapsuleGeometry(r, len, 3, 8); g.translate(0, len / 2, 0); return g; }); }
-function box(w, h, d) { return geo(`box${w}_${h}_${d}`, () => new THREE.BoxGeometry(w, h, d)); }
-function sphere(r, ws = 12, hs = 8) { return geo(`sph${r}_${ws}`, () => new THREE.SphereGeometry(r, ws, hs)); }
-function halfSphere(r) { return geo(`hs${r}`, () => new THREE.SphereGeometry(r, 12, 6, 0, Math.PI * 2, 0, Math.PI * 0.55)); }
-function cone(r, h, s = 8) { return geo(`cone${r}_${h}_${s}`, () => new THREE.ConeGeometry(r, h, s)); }
-function cyl(rt, rb, h, s = 10, open = false) { return geo(`cyl${rt}_${rb}_${h}_${s}_${open}`, () => new THREE.CylinderGeometry(rt, rb, h, s, 1, open)); }
-
-export const FLESH_MAT = new THREE.MeshStandardMaterial({ color: 0x6a0000, roughness: 0.35, metalness: 0, emissive: 0x200000 });
-const BONE_MAT = new THREE.MeshStandardMaterial({ color: 0xe8dcc0, roughness: 0.6 });
-const EYE_MAT = new THREE.MeshBasicMaterial({ color: 0x111111 });
+export { FLESH_MAT };
 
 export class Character {
   constructor(scene, opts) {
@@ -124,241 +118,25 @@ export class Character {
       lh: new THREE.Vector3(0.25, 1.0, 0.25), look: null,
       react: new THREE.Vector3(), reactT: 0, jitter: 0, headLook: 0
     };
+    // пружины вторичного движения и состояние шагов
+    this.spr = { lean: 0, leanV: 0, roll: 0, rollV: 0, twist: 0, twistV: 0, py: 0, pyV: 0, pvx: 0, pvz: 0, ax: 0, az: 0, react: new THREE.Vector3(), reactV: new THREE.Vector3(), hx: 0, hz: 0, init: false };
+    const mkFoot = (side, off) => ({ side, off, p: new THREE.Vector3(), from: new THREE.Vector3(), swing: false, stepT: -1, h: 0, pitch: 0, l: new THREE.Vector3() });
+    this.feet = { l: mkFoot(1, 0), r: mkFoot(-1, 0.5), phase: 0, init: false, moving: false, cool: 0, still: 0 };
+    this.face = { mouth: 0, mouthT: 0, blinkT: 1 + Math.random() * 4, blink: 0 };
+    this.headFwd = new THREE.Vector3(0, 0, 1);
+    this.spineMid = new THREE.Vector3();
+    this.bloodAmt = 0;
     this.weaponTip = new THREE.Vector3();
     this.prevTip = new THREE.Vector3();
     this.weaponX = new THREE.Vector3(1, 0, 0);
     this.group = new THREE.Group();
     scene.add(this.group);
-    this.buildMaterials();
-    this.buildMeshes();
-    this.mergeMeshes();
+    buildBody(this);
     if (opts.weaponId) this.setWeapon(opts.weaponId);
     this.capsules = [];
     this.flash = 0;
-    this.tint = null; // 'frozen' | 'burn' | 'char'
+    this.tint = null; // 'frozen' | 'burn' | 'char' | 'acid'
     this.tintAmt = 0;
-  }
-
-  buildMaterials() {
-    const L = this.look;
-    const std = (color, rough = 0.8, metal = 0) => new THREE.MeshStandardMaterial({ color, roughness: rough, metalness: metal });
-    this.mats = {
-      skin: std(L.skin, 0.7), cloth: std(L.cloth, 0.9), pants: std(L.pants, 0.9),
-      metal: std(L.metal || 0x8e949c, 0.42, 0.85), hair: std(L.hair, 0.95),
-      leather: std(0x5a3a22, 0.85), dark: std(0x161616, 0.9),
-      gold: std(0xc8a040, 0.35, 0.9), accent: std(L.accent || 0xa01010, 0.8)
-    };
-    if (L.top === 'chain') { this.mats.metal.roughness = 0.55; }
-    this.matList = Object.values(this.mats);
-    this.baseColors = this.matList.map((m) => m.color.clone());
-  }
-
-  addPart(seg, geom, mat, x = 0, y = 0, z = 0, sx = 1, sy = 1, sz = 1) {
-    const m = new THREE.Mesh(geom, mat);
-    m.position.set(x, y, z);
-    m.scale.set(sx, sy, sz);
-    m.castShadow = true;
-    seg.group.add(m);
-    return m;
-  }
-
-  buildMeshes() {
-    const s = this.scale, d = this.dim, L = this.look, M = this.mats, b = this.bulk;
-    this.segs = {};
-    for (const [name, a, bj] of SEGMENTS) {
-      const g = new THREE.Group();
-      g.scale.setScalar(1);
-      this.group.add(g);
-      this.segs[name] = { name, a, b: bj, group: g, z: new THREE.Vector3(0, 0, 1), attached: true, caps: [] };
-    }
-    const S = this.segs;
-    const top = L.top || 'tunic';
-    const armored = top === 'plate' || top === 'chain';
-    // ---- Торс ----
-    const torsoMat = top === 'bare' ? M.skin : top === 'plate' ? M.metal : top === 'chain' ? M.metal : top === 'leather' ? M.leather : M.cloth;
-    const tw = 0.36 * s * b, th = d.spine, tdp = 0.21 * s * b;
-    // грудь — сужающийся «бочонок», живот, таз
-    const chest = geo('chest', () => { const g = new THREE.CylinderGeometry(0.5, 0.37, 1, 10, 1); g.scale(1, 1, 0.58); return g; });
-    const belly = geo('belly', () => { const g = new THREE.CylinderGeometry(0.37, 0.42, 1, 10, 1); g.scale(1, 1, 0.62); return g; });
-    this.addPart(S.torso, chest, torsoMat, 0, th * 0.66, 0, tw, th * 0.6, tw);
-    this.addPart(S.torso, belly, top === 'bare' ? M.skin : (top === 'plate' ? M.cloth : torsoMat), 0, th * 0.2, 0, tw, th * 0.42, tw);
-    this.addPart(S.torso, cyl(0.21, 0.21, 1, 10), M.leather, 0, 0.02 * s, 0, tw * 2.15, 0.075 * s, tw * 1.35); // пояс
-    this.addPart(S.torso, box(tw * 0.62, 0.05 * s, 0.02), M.gold, 0, 0.02 * s, tdp * 0.53);
-    if (top === 'bare') {
-      // грудные мышцы и ремень через плечо
-      this.addPart(S.torso, box(tw * 0.42, 0.1 * s, 0.03), M.skin, tw * 0.22, th * 0.72, tdp * 0.5);
-      this.addPart(S.torso, box(tw * 0.42, 0.1 * s, 0.03), M.skin, -tw * 0.22, th * 0.72, tdp * 0.5);
-      const strap = this.addPart(S.torso, box(0.05 * s, th * 0.95, tdp * 1.06), M.leather, 0, th * 0.5, 0);
-      strap.rotation.z = 0.6;
-    }
-    if (top === 'plate') {
-      this.addPart(S.torso, chest, M.metal, 0, th * 0.7, 0.008, tw * 1.07, th * 0.5, tw * 1.1);
-      this.addPart(S.torso, sphere(0.1 * s * b, 10, 6), M.metal, d.shW * 0.95, th * 0.95, 0, 1, 0.75, 1);
-      this.addPart(S.torso, sphere(0.1 * s * b, 10, 6), M.metal, -d.shW * 0.95, th * 0.95, 0, 1, 0.75, 1);
-    }
-    if (top === 'chain') {
-      this.addPart(S.torso, chest, M.metal, 0, th * 0.6, 0, tw * 1.05, th * 0.75, tw * 1.06);
-    }
-    if (top === 'leather') {
-      this.addPart(S.torso, sphere(0.085 * s * b, 10, 6), M.leather, d.shW * 0.95, th * 0.93, 0, 1, 0.7, 1);
-      this.addPart(S.torso, sphere(0.085 * s * b, 10, 6), M.leather, -d.shW * 0.95, th * 0.93, 0, 1, 0.7, 1);
-      this.addPart(S.torso, box(tw * 0.5, th * 0.3, 0.03), M.cloth, 0, th * 0.65, tdp * 0.52);
-    }
-    if (top === 'robe') {
-      this.addPart(S.torso, cyl(0.17 * s * b, 0.27 * s * b, 0.52 * s, 10, true), M.cloth, 0, -0.25 * s, 0);
-      this.addPart(S.torso, box(tw * 0.25, th * 0.9, 0.02), M.gold, 0, th * 0.45, tdp * 0.52);
-    }
-    if (top === 'tunic') {
-      this.addPart(S.torso, cyl(0.17 * s * b, 0.21 * s * b, 0.22 * s, 10, true), M.cloth, 0, -0.08 * s, 0);
-    }
-    // культи на торсе
-    const stump = (seg, name, x, y, z, r = 0.06 * s) => {
-      const m = this.addPart(seg, sphere(r, 8, 6), FLESH_MAT, x, y, z, 1, 0.55, 1);
-      m.visible = false;
-      seg.caps.push({ name, mesh: m });
-      return m;
-    };
-    stump(S.torso, 'head', 0, th, 0, 0.065 * s);
-    stump(S.torso, 'larm', d.shW, th * 0.92, 0);
-    stump(S.torso, 'rarm', -d.shW, th * 0.92, 0);
-    stump(S.torso, 'lleg', d.hipW, -0.02, 0, 0.075 * s);
-    stump(S.torso, 'rleg', -d.hipW, -0.02, 0, 0.075 * s);
-
-    // ---- Голова ----
-    const H = S.head;
-    this.addPart(H, cyl(0.05 * s * b, 0.06 * s * b, 0.12 * s), M.skin, 0, 0.05 * s, 0);
-    const headY = d.neck;
-    this.addPart(H, sphere(0.112 * s), M.skin, 0, headY, 0.005, 1, 1.12, 1.05);
-    this.addPart(H, box(0.03 * s, 0.05 * s, 0.04 * s), M.skin, 0, headY - 0.01 * s, 0.11 * s); // нос
-    this.addPart(H, box(0.026 * s, 0.018 * s, 0.01), EYE_MAT, 0.042 * s, headY + 0.025 * s, 0.104 * s);
-    this.addPart(H, box(0.026 * s, 0.018 * s, 0.01), EYE_MAT, -0.042 * s, headY + 0.025 * s, 0.104 * s);
-    this.addPart(H, box(0.06 * s, 0.012 * s, 0.01), EYE_MAT, 0, headY - 0.06 * s, 0.1 * s); // рот
-    const helm = L.helm || 'none';
-    if (helm === 'none' || helm === 'horns') this.addPart(H, halfSphere(0.12 * s), M.hair, 0, headY + 0.005, -0.01);
-    if (helm === 'helm' || helm === 'cap' || helm === 'horns' || helm === 'gladiator' || helm === 'dragon') {
-      const mat = helm === 'cap' ? M.leather : (helm === 'gladiator' ? M.gold : M.metal);
-      this.addPart(H, halfSphere(0.13 * s), mat, 0, headY + 0.01, 0);
-      if (helm !== 'cap') this.addPart(H, box(0.022 * s, 0.09 * s, 0.02 * s), mat, 0, headY + 0.0, 0.125 * s);
-    }
-    if (helm === 'gladiator') {
-      this.addPart(H, box(0.03 * s, 0.1 * s, 0.26 * s), M.accent, 0, headY + 0.15 * s, -0.01);
-      this.addPart(H, box(0.02 * s, 0.1 * s, 0.07 * s), M.gold, 0.11 * s, headY - 0.04 * s, 0.05 * s);
-      this.addPart(H, box(0.02 * s, 0.1 * s, 0.07 * s), M.gold, -0.11 * s, headY - 0.04 * s, 0.05 * s);
-    }
-    if (helm === 'horns' || helm === 'dragon') {
-      const hornMat = helm === 'dragon' ? M.dark : BONE_MAT;
-      const h1 = this.addPart(H, cone(0.03 * s, 0.2 * s, 6), hornMat, 0.11 * s, headY + 0.1 * s, 0);
-      h1.rotation.z = -0.9;
-      const h2 = this.addPart(H, cone(0.03 * s, 0.2 * s, 6), hornMat, -0.11 * s, headY + 0.1 * s, 0);
-      h2.rotation.z = 0.9;
-    }
-    if (helm === 'dragon') {
-      for (let i = 0; i < 4; i++) {
-        const sp = this.addPart(H, cone(0.02 * s, 0.12 * s, 5), M.accent, 0, headY + 0.12 * s - i * 0.04 * s, -0.08 * s - i * 0.02 * s);
-        sp.rotation.x = -1.2;
-      }
-    }
-    if (helm === 'knight') {
-      this.addPart(H, cyl(0.135 * s, 0.13 * s, 0.27 * s, 12), M.metal, 0, headY + 0.02 * s, 0);
-      this.addPart(H, box(0.18 * s, 0.018 * s, 0.02), EYE_MAT, 0, headY + 0.03 * s, 0.132 * s);
-      this.addPart(H, box(0.03 * s, 0.07 * s, 0.24 * s), M.accent, 0, headY + 0.17 * s, 0);
-    }
-    if (helm === 'hood' || helm === 'executioner') {
-      const hm = helm === 'executioner' ? M.dark : M.cloth;
-      this.addPart(H, sphere(0.127 * s), hm, 0, headY + 0.012, -0.018, 1, 1.12, 1.02);
-      if (helm === 'hood') { const c = this.addPart(H, cone(0.08 * s, 0.16 * s), hm, 0, headY + 0.05 * s, -0.12 * s); c.rotation.x = -1.9; }
-      if (helm === 'executioner') {
-        this.addPart(H, box(0.03 * s, 0.018 * s, 0.01), new THREE.MeshBasicMaterial({ color: 0xff3300 }), 0.042 * s, headY + 0.025 * s, 0.128 * s);
-        this.addPart(H, box(0.03 * s, 0.018 * s, 0.01), new THREE.MeshBasicMaterial({ color: 0xff3300 }), -0.042 * s, headY + 0.025 * s, 0.128 * s);
-      }
-    }
-    if (helm === 'mage') {
-      this.addPart(H, halfSphere(0.12 * s), M.hair, 0, headY + 0.005, -0.01);
-      this.addPart(H, cyl(0.24 * s, 0.24 * s, 0.015 * s, 14), M.cloth, 0, headY + 0.08 * s, 0);
-      const hat = this.addPart(H, cone(0.13 * s, 0.34 * s, 10), M.cloth, 0, headY + 0.25 * s, -0.02 * s);
-      hat.rotation.x = -0.18;
-      // борода
-      this.addPart(H, cone(0.06 * s, 0.14 * s, 6), M.hair, 0, headY - 0.12 * s, 0.07 * s, 1, 1, 0.6).rotation.x = Math.PI;
-    }
-    stump(H, 'headcut', 0, 0.0, 0, 0.055 * s);
-
-    // ---- Руки ----
-    const armMat = top === 'bare' || top === 'tunic' ? M.skin : (armored ? M.metal : (top === 'robe' ? M.cloth : M.skin));
-    const ur = 0.052 * s * b, fr = 0.046 * s * b;
-    for (const side of ['l', 'r']) {
-      const up = S[side + 'upper'], fo = S[side + 'fore'];
-      this.addPart(up, capsule(ur, d.upper - ur), armMat, 0, ur * 0.5, 0);
-      this.addPart(fo, capsule(fr, d.fore - fr * 2), top === 'robe' ? M.cloth : (armored ? M.metal : M.skin), 0, fr, 0);
-      this.addPart(fo, box(0.065 * s, 0.09 * s, 0.035 * s), armored ? M.metal : M.skin, 0, d.fore + 0.02 * s, 0.0);
-      if (top === 'leather' || top === 'bare') this.addPart(fo, cyl(fr * 1.25, fr * 1.15, 0.1 * s), M.leather, 0, d.fore * 0.7, 0);
-      const cap = this.addPart(up, sphere(ur * 1.1, 8, 6), FLESH_MAT, 0, 0, 0, 1, 0.5, 1); cap.visible = false; up.caps.push({ name: 'cut', mesh: cap });
-      const cap2 = this.addPart(fo, sphere(fr * 1.1, 8, 6), FLESH_MAT, 0, 0, 0, 1, 0.5, 1); cap2.visible = false; fo.caps.push({ name: 'cut', mesh: cap2 });
-      const ecap = this.addPart(up, sphere(ur, 8, 6), FLESH_MAT, 0, d.upper, 0, 1, 0.5, 1); ecap.visible = false; up.caps.push({ name: 'end', mesh: ecap });
-    }
-    // ---- Ноги ----
-    const tr = 0.074 * s * Math.sqrt(b), sr = 0.056 * s * Math.sqrt(b);
-    const bootMat = armored ? M.metal : M.leather;
-    for (const side of ['l', 'r']) {
-      const th2 = S[side + 'thigh'], sh = S[side + 'shin'];
-      this.addPart(th2, capsule(tr, d.thigh - tr), M.pants, 0, tr * 0.4, 0);
-      this.addPart(sh, capsule(sr, d.shin - sr * 2), M.pants, 0, sr, 0);
-      this.addPart(sh, cyl(sr * 1.25, sr * 1.15, d.shin * 0.55), bootMat, 0, d.shin * 0.72, 0);
-      this.addPart(sh, box(0.09 * s, 0.07 * s, 0.22 * s), bootMat, 0, d.shin + 0.02 * s, 0.05 * s);
-      const c1 = this.addPart(th2, sphere(tr * 1.05, 8, 6), FLESH_MAT, 0, 0, 0, 1, 0.5, 1); c1.visible = false; th2.caps.push({ name: 'cut', mesh: c1 });
-      const c2 = this.addPart(sh, sphere(sr * 1.1, 8, 6), FLESH_MAT, 0, 0, 0, 1, 0.5, 1); c2.visible = false; sh.caps.push({ name: 'cut', mesh: c2 });
-      const c3 = this.addPart(th2, sphere(tr, 8, 6), FLESH_MAT, 0, d.thigh, 0, 1, 0.5, 1); c3.visible = false; th2.caps.push({ name: 'end', mesh: c3 });
-    }
-    // Магическое свечение в левой руке
-    if (L.glow) {
-      const glowMat = new THREE.MeshBasicMaterial({ color: L.glow, transparent: true, opacity: 0.0, blending: THREE.AdditiveBlending, depthWrite: false });
-      this.handGlow = this.addPart(S.lfore, sphere(0.09 * s, 10, 8), glowMat, 0, d.fore + 0.04 * s, 0.03);
-      this.handGlow.castShadow = false;
-    }
-  }
-
-  // Слить статичные детали каждого сегмента по материалам — меньше draw calls.
-  mergeMeshes() {
-    this.ownGeos = [];
-    for (const name in this.segs) {
-      const sg = this.segs[name];
-      const keep = new Set(sg.caps.map((c) => c.mesh));
-      if (this.handGlow) keep.add(this.handGlow);
-      const byMat = new Map();
-      for (const m of sg.group.children) {
-        if (!m.isMesh || keep.has(m)) continue;
-        if (!byMat.has(m.material)) byMat.set(m.material, []);
-        byMat.get(m.material).push(m);
-      }
-      for (const [mat, list] of byMat) {
-        if (list.length < 2) continue;
-        const parts = [];
-        let total = 0;
-        for (const m of list) {
-          m.updateMatrix();
-          const g = (m.geometry.index ? m.geometry.toNonIndexed() : m.geometry.clone());
-          g.applyMatrix4(m.matrix);
-          parts.push(g);
-          total += g.attributes.position.count;
-        }
-        const pos = new Float32Array(total * 3), nor = new Float32Array(total * 3);
-        let o = 0;
-        for (const g of parts) {
-          pos.set(g.attributes.position.array, o * 3);
-          nor.set(g.attributes.normal.array, o * 3);
-          o += g.attributes.position.count;
-          g.dispose();
-        }
-        const geo = new THREE.BufferGeometry();
-        geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-        geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
-        geo.computeBoundingSphere();
-        const merged = new THREE.Mesh(geo, mat);
-        merged.castShadow = true;
-        for (const m of list) sg.group.remove(m);
-        sg.group.add(merged);
-        this.ownGeos.push(geo);
-      }
-    }
   }
 
   setWeapon(id) {
@@ -389,70 +167,193 @@ export class Character {
 
   forward(out) { return out.set(Math.sin(this.facing), 0, Math.cos(this.facing)); }
 
-  computeLocalPose(dt) {
-    const A = this.anim, d = this.dim, P = this.local;
-    this.time += dt;
-    const speed = Math.hypot(A.vel.x, A.vel.z);
-    const moving = speed > 0.25;
-    A.phase += dt * (moving ? (2.4 + speed * 1.5) / this.scale : 0);
-    const bob = moving ? Math.abs(Math.sin(A.phase)) * 0.045 * this.scale : Math.sin(this.time * 2.2) * 0.008;
-    const crouch = A.crouch;
-    const pelvisY = (0.9 - crouch * 0.32) * this.scale + (moving ? bob - 0.02 : bob);
-    P[J.PELVIS].set(0, pelvisY, 0);
-    const pelYaw = A.twist * 0.3;
-    const pc = Math.cos(pelYaw), ps = Math.sin(pelYaw);
-    P[J.LHIP].set(d.hipW * pc, pelvisY - 0.03 * this.scale, -d.hipW * ps);
-    P[J.RHIP].set(-d.hipW * pc, pelvisY - 0.03 * this.scale, d.hipW * ps);
-    // ноги
-    const dirX = moving ? A.vel.x / speed : 0, dirZ = moving ? A.vel.z / speed : 0;
-    const stride = Math.min(1, speed / 3.2) * 0.34 * this.scale;
-    for (const side of [1, -1]) {
-      const hip = side === 1 ? P[J.LHIP] : P[J.RHIP];
-      const ph = A.phase + (side === 1 ? 0 : Math.PI);
-      const baseZ = (side === 1 ? 0.13 : -0.1) * this.scale * (1 - Math.min(1, speed / 2));
-      const baseX = side * 0.15 * this.scale;
-      let fx = baseX, fz = baseZ, fy = d.foot;
-      if (moving) {
-        const sw = Math.sin(ph);
-        fx += dirX * sw * stride;
-        fz += dirZ * sw * stride;
-        fy += Math.max(0, Math.cos(ph)) * 0.13 * this.scale;
+  // Точка покоя ступни (мир) для текущего положения корпуса.
+  restFoot(side, speed, out) {
+    const s = this.scale;
+    const k = Math.max(0, 1 - speed / 2.5);
+    const lx = side * (0.125 + 0.035 * k) * s, lz = (side > 0 ? 0.1 : -0.09) * s * k;
+    const c = Math.cos(this.facing), sn = Math.sin(this.facing);
+    return out.set(this.root.x + lx * c + lz * sn, 0, this.root.z - lx * sn + lz * c);
+  }
+
+  snapFeet(speed = 0) {
+    const F = this.feet;
+    for (const f of [F.l, F.r]) {
+      this.restFoot(f.side, speed, f.p);
+      f.swing = false; f.stepT = -1; f.h = 0; f.pitch = 0;
+    }
+    F.init = true;
+  }
+
+  // Шаги: ступни закреплены в мире и переставляются, а не скользят.
+  updateFeet(dt, speed, wvx, wvz) {
+    const F = this.feet, s = this.scale;
+    const feet = [F.l, F.r];
+    if (!F.init) this.snapFeet(speed);
+    for (const f of feet) {
+      this.restFoot(f.side, speed, _v1);
+      if (Math.hypot(f.p.x - _v1.x, f.p.z - _v1.z) > 1.25 * s) { this.snapFeet(speed); break; }
+    }
+    const moving = speed > 0.45;
+    if (moving) {
+      const stride = (0.4 + speed * 0.16) * s;
+      const freq = Math.max(1.0, speed / (2 * stride));
+      if (!F.moving) {
+        // первой шагает нога, оставшаяся позади
+        const pl = (F.l.p.x - this.root.x) * wvx + (F.l.p.z - this.root.z) * wvz;
+        const pr = (F.r.p.x - this.root.x) * wvx + (F.r.p.z - this.root.z) * wvz;
+        F.phase = pl < pr ? 0 : 0.5;
       }
-      const foot = side === 1 ? P[J.LFT] : P[J.RFT];
-      const knee = side === 1 ? P[J.LKN] : P[J.RKN];
-      _v3.set(fx, fy, fz);
-      const tgt = _v3.clone();
-      ik2(hip, tgt, d.thigh, d.shin, new THREE.Vector3(side * 0.15, 0, 1), knee, foot);
+      F.phase = (F.phase + dt * freq) % 1;
+      const SW = 0.46;
+      const k = Math.min(1, speed / 2.2);
+      for (const f of feet) {
+        f.stepT = -1;
+        const ph = (F.phase + f.off) % 1;
+        if (ph < SW) {
+          if (!f.swing) { f.swing = true; f.from.copy(f.p); }
+          const t = ph / SW;
+          const lead = (1 - t) * SW / freq + (1 - SW) / freq * 0.5;
+          this.restFoot(f.side, speed, _v1);
+          _v1.x += wvx * lead; _v1.z += wvz * lead;
+          const e = t * t * (3 - 2 * t);
+          f.p.x = f.from.x + (_v1.x - f.from.x) * e;
+          f.p.z = f.from.z + (_v1.z - f.from.z) * e;
+          f.h = Math.sin(Math.PI * t) * (0.045 + 0.075 * k) * s;
+          f.pitch = (t < 0.4 ? 0.6 * (1 - t / 0.4) : t > 0.72 ? -0.32 * (t - 0.72) / 0.28 : 0) * k;
+        } else {
+          f.swing = false;
+          f.h = 0;
+          const st = (ph - SW) / (1 - SW);
+          f.pitch = st > 0.72 ? 0.55 * (st - 0.72) / 0.28 * k : 0;
+        }
+      }
+      F.still = 0;
+    } else {
+      F.still += dt;
+      F.cool -= dt;
+      let active = null;
+      for (const f of feet) {
+        if (f.swing && f.stepT < 0) { f.stepT = 0.25; f.from.copy(f.p); }
+        if (f.stepT >= 0) active = active || f;
+      }
+      if (!active && F.cool <= 0) {
+        let best = null, be = 0;
+        for (const f of feet) {
+          this.restFoot(f.side, speed, _v1);
+          const err = Math.hypot(f.p.x - _v1.x, f.p.z - _v1.z);
+          if (err > be) { be = err; best = f; }
+        }
+        if (best && (be > 0.17 * s || (be > 0.06 * s && F.still > 0.45))) { best.stepT = 0; best.swing = true; best.from.copy(best.p); }
+      }
+      for (const f of feet) {
+        if (f.stepT >= 0) {
+          f.stepT += dt / 0.2;
+          const t = Math.min(1, f.stepT);
+          this.restFoot(f.side, speed, _v1);
+          const e = t * t * (3 - 2 * t);
+          f.p.x = f.from.x + (_v1.x - f.from.x) * e;
+          f.p.z = f.from.z + (_v1.z - f.from.z) * e;
+          f.h = Math.sin(Math.PI * t) * 0.05 * s;
+          f.pitch = Math.sin(Math.PI * t) * 0.22;
+          if (t >= 1) { f.stepT = -1; f.swing = false; f.h = 0; f.pitch = 0; F.cool = 0.06; }
+        } else { f.h = 0; f.pitch *= Math.max(0, 1 - dt * 10); }
+      }
     }
-    // корпус
-    const lean = A.lean + (moving ? 0.08 : 0.04) + crouch * 0.25;
-    const tw = A.twist;
-    const up = new THREE.Vector3(0, d.spine, 0);
-    up.applyAxisAngle(new THREE.Vector3(1, 0, 0), lean);
-    up.applyAxisAngle(UP, tw);
+    F.moving = moving;
+    const c = Math.cos(this.facing), sn = Math.sin(this.facing);
+    for (const f of feet) {
+      const dx = f.p.x - this.root.x, dz = f.p.z - this.root.z;
+      f.l.set(dx * c - dz * sn, this.dim.foot + f.h, dx * sn + dz * c);
+    }
+  }
+
+  computeLocalPose(dt) {
+    const A = this.anim, d = this.dim, P = this.local, s = this.scale, S = this.spr, F = this.feet;
+    this.time += dt;
+    const vx = A.vel.x, vz = A.vel.z;
+    const speed = Math.hypot(vx, vz);
+    const cf = Math.cos(this.facing), sf = Math.sin(this.facing);
+    const wvx = vx * cf + vz * sf, wvz = -vx * sf + vz * cf;
+    if (!S.init) { S.pvx = vx; S.pvz = vz; }
+    const idt = 1 / Math.max(dt, 1e-4), k8 = Math.min(1, dt * 8);
+    S.ax += (Math.max(-25, Math.min(25, (vx - S.pvx) * idt)) - S.ax) * k8;
+    S.az += (Math.max(-25, Math.min(25, (vz - S.pvz) * idt)) - S.az) * k8;
+    S.pvx = vx; S.pvz = vz;
+    this.updateFeet(dt, speed, wvx, wvz);
+    const fl = F.l.l, fr = F.r.l;
+    // ---- таз: высота ограничена длиной ног, вес смещается на опорную ногу
+    const crouch = A.crouch;
+    const moveK = Math.min(1, speed / 2.5);
+    const sway = (F.r.h - F.l.h) * 0.22 + Math.sin(this.time * 0.8) * 0.006 * s * (1 - moveK);
+    const Lmax = (d.thigh + d.shin) * 0.985;
+    let py = (0.915 - crouch * 0.3) * s;
+    for (let i = 0; i < 2; i++) {
+      const f = i ? fr : fl, side = i ? -1 : 1;
+      const dx = f.x - (side * d.hipW + sway), dz = f.z;
+      const m = f.y + Math.sqrt(Math.max(0.02, Lmax * Lmax - dx * dx - dz * dz)) + 0.03 * s;
+      if (m < py) py = m;
+    }
+    py -= moveK * 0.012 * s;
+    if (!S.init) { S.py = py; S.init = true; }
+    S.pyV += ((py - S.py) * 260 - S.pyV * 24) * dt;
+    S.py += S.pyV * dt;
+    if (S.py > py + 0.015 * s) { S.py = py + 0.015 * s; if (S.pyV > 0) S.pyV = 0; }
+    const breath = Math.sin(this.time * 1.7);
+    this.breath = breath;
+    const pelY = S.py + breath * 0.003 * s;
+    P[J.PELVIS].set(sway, pelY, 0);
+    const legYaw = -Math.max(-1, Math.min(1, (fl.z - fr.z) / (0.9 * s))) * 0.24 * moveK;
+    const hipYaw = legYaw + A.twist * 0.3;
+    const pc = Math.cos(hipYaw), ps = Math.sin(hipYaw);
+    P[J.LHIP].set(sway + d.hipW * pc, pelY - 0.03 * s, -d.hipW * ps);
+    P[J.RHIP].set(sway - d.hipW * pc, pelY - 0.03 * s, d.hipW * ps);
+    ik2(P[J.LHIP], fl, d.thigh, d.shin, _pole.set(0.16, 0, 1), P[J.LKN], P[J.LFT]);
+    ik2(P[J.RHIP], fr, d.thigh, d.shin, _pole.set(-0.16, 0, 1), P[J.RKN], P[J.RFT]);
+    // ---- корпус на пружинах: наклон в сторону ускорения, крен при стрейфе, скручивание
+    const leanT = A.lean + 0.045 + crouch * 0.25 + Math.max(-0.06, Math.min(0.13, vz * 0.03)) + Math.max(-0.09, Math.min(0.11, S.az * 0.006));
+    const rollT = Math.max(-0.16, Math.min(0.16, vx * 0.032 + S.ax * 0.005));
+    const twistT = A.twist - legYaw * 0.5 + Math.sin(this.time * 0.6) * 0.025 * (1 - moveK);
+    S.leanV += ((leanT - S.lean) * 170 - S.leanV * 17) * dt; S.lean += S.leanV * dt;
+    S.rollV += ((rollT - S.roll) * 170 - S.rollV * 17) * dt; S.roll += S.rollV * dt;
+    S.twistV += ((twistT - S.twist) * 210 - S.twistV * 19) * dt; S.twist += S.twistV * dt;
+    const up = _up.set(0, d.spine, 0).applyAxisAngle(X_AXIS, S.lean).applyAxisAngle(Z_AXIS, -S.roll).applyAxisAngle(UP, S.twist);
     P[J.NECK].copy(P[J.PELVIS]).add(up);
-    const tc = Math.cos(tw), ts = Math.sin(tw);
-    P[J.LSH].set(P[J.NECK].x + d.shW * tc, P[J.NECK].y - 0.04 * this.scale, P[J.NECK].z - d.shW * ts);
-    P[J.RSH].set(P[J.NECK].x - d.shW * tc, P[J.NECK].y - 0.04 * this.scale, P[J.NECK].z + d.shW * ts);
-    // голова
-    const hd = new THREE.Vector3(0, 1, 0).applyAxisAngle(new THREE.Vector3(1, 0, 0), lean * 0.4);
+    for (let i = 0; i < 2; i++) {
+      const side = i ? -1 : 1;
+      _v3.set(side * d.shW, (-0.04 + breath * 0.004) * s, 0).applyAxisAngle(Z_AXIS, -S.roll * 1.2).applyAxisAngle(UP, S.twist);
+      P[i ? J.RSH : J.LSH].copy(P[J.NECK]).add(_v3);
+    }
+    // плечо подаётся за рукой
+    for (let i = 0; i < 2; i++) {
+      const sh = P[i ? J.RSH : J.LSH], tg = i ? A.rh : A.lh;
+      _v3.subVectors(tg, sh);
+      const L = _v3.length();
+      if (L > 1e-4) sh.addScaledVector(_v3, Math.min(0.055 * s, L * 0.14) / L);
+    }
+    // ---- голова: вдоль позвоночника с запаздывающим поворотом к цели
+    const hd = _hd.copy(up).normalize().multiplyScalar(0.7);
+    hd.y += 0.3;
+    let tx = 0, tz = 0;
     if (A.look) {
-      this.dirToLocal(_v1.subVectors(A.look, this.toWorld(P[J.NECK], new THREE.Vector3())), _v2);
-      _v2.normalize();
-      hd.addScaledVector(_v2, 0.35).normalize();
+      this.toWorld(P[J.NECK], _v3);
+      this.dirToLocal(_v1.subVectors(A.look, _v3), _v2).normalize();
+      tx = Math.max(-0.22, Math.min(0.22, _v2.x * 0.3));
+      tz = Math.max(-0.1, Math.min(0.25, _v2.z * 0.28));
     }
-    P[J.HEAD].copy(P[J.NECK]).addScaledVector(hd, d.neck);
-    // руки (IK)
-    ik2(P[J.RSH], A.rh, d.upper, d.fore, new THREE.Vector3(-0.7, -0.8, -0.5), P[J.REL], P[J.RHA]);
-    ik2(P[J.LSH], A.lh, d.upper, d.fore, new THREE.Vector3(0.7, -0.8, -0.4), P[J.LEL], P[J.LHA]);
-    // реакция на удар
-    if (A.reactT > 0) {
-      const k = Math.sin(Math.min(1, A.reactT / 0.35) * Math.PI * 0.5);
-      const r = A.react;
-      const w = [1.0, 0.75, 0.0, 0.7, 0.7, 0.6, 0.6, 0.5, 0.5, 0, 0, 0, 0, 0, 0];
-      for (let i = 0; i < NJ; i++) if (w[i]) P[i].addScaledVector(r, w[i] * k);
-      A.reactT -= dt;
-    }
+    const hk = Math.min(1, dt * 7);
+    S.hx += (tx - S.hx) * hk; S.hz += (tz - S.hz) * hk;
+    hd.x += S.hx; hd.z += S.hz;
+    P[J.HEAD].copy(P[J.NECK]).addScaledVector(hd.normalize(), d.neck);
+    // ---- руки (IK)
+    ik2(P[J.RSH], A.rh, d.upper, d.fore, _pole.set(-0.7, -0.8, -0.5), P[J.REL], P[J.RHA]);
+    ik2(P[J.LSH], A.lh, d.upper, d.fore, _pole.set(0.7, -0.8, -0.4), P[J.LEL], P[J.LHA]);
+    // ---- реакция на удар: затухающая пружина
+    const rv = S.reactV, rx = S.react;
+    rv.x += (-rx.x * 240 - rv.x * 11) * dt; rv.y += (-rx.y * 240 - rv.y * 11) * dt; rv.z += (-rx.z * 240 - rv.z * 11) * dt;
+    rx.addScaledVector(rv, dt);
+    if (rx.lengthSq() > 0.09) rx.setLength(0.3);
+    if (rx.lengthSq() > 1e-7) for (let i = 0; i < NJ; i++) if (REACT_W[i]) P[i].addScaledVector(rx, REACT_W[i]);
     if (A.jitter > 0) {
       for (let i = 0; i < NJ; i++) {
         if (i === J.LFT || i === J.RFT) continue;
@@ -463,7 +364,7 @@ export class Character {
     }
   }
 
-  // Обновление каждый кадр. ctx: { dt, R, events }
+  // Обновление каждый кадр.
   update(dt, R, events) {
     if (dt <= 0) return;
     for (let i = 0; i < NJ; i++) this.prevPose[i].copy(this.pose[i]);
@@ -485,69 +386,108 @@ export class Character {
       for (let i = 0; i < NJ; i++) if (!this.missing.has(i)) this.pose[i].copy(this.ragdoll.p[i]);
     }
     for (let i = 0; i < NJ; i++) this.vel[i].subVectors(this.pose[i], this.prevPose[i]).divideScalar(dt);
-    this.updateMeshes();
+    this.updateMeshes(dt);
     this.capsulesDirty = true;
+    if (!this.frozen) this.updateFace(dt);
     // эффекты материалов
     if (this.flash > 0) this.flash = Math.max(0, this.flash - dt * 6);
     this.applyTint();
     if (this.handGlow) {
       const target = this.castGlow || 0;
-      this.handGlow.material.opacity += (target - this.handGlow.material.opacity) * Math.min(1, dt * 10);
-      this.handGlow.scale.setScalar(0.6 + this.handGlow.material.opacity * 0.8 + Math.sin(this.time * 30) * 0.08 * target);
-      this.handGlow.visible = this.handGlow.material.opacity > 0.02 && !this.severed.has('larm') && !this.severed.has('lfore');
+      const gm = this.handGlow.material;
+      gm.opacity += (target - gm.opacity) * Math.min(1, dt * 10);
+      this.handGlow.scale.setScalar(this.handGlowBase * (0.6 + gm.opacity * 0.8 + Math.sin(this.time * 30) * 0.08 * target));
+      this.handGlow.visible = gm.opacity > 0.02 && !this.severed.has('larm') && !this.severed.has('lfore');
     }
+  }
+
+  updateFace(dt) {
+    const fp = this.faceParts;
+    if (!fp) return;
+    const Fc = this.face;
+    Fc.mouth += (Fc.mouthT - Fc.mouth) * Math.min(1, dt * 16);
+    const m = Fc.mouth, b = fp.mouthBase;
+    fp.mouth.scale.set(b[0] * (1 - m * 0.22), b[1] * (1 + m * 5.5), b[2]);
+    Fc.blinkT -= dt;
+    if (Fc.blinkT <= 0) { Fc.blinkT = 1.5 + Math.random() * 4; Fc.blink = 0.12; }
+    Fc.blink = Math.max(0, Fc.blink - dt);
+    const open = Fc.closed ? 0.15 : (Fc.blink > 0 ? 0.1 : 1 - m * 0.2);
+    fp.eyes.scale.y += (open - fp.eyes.scale.y) * Math.min(1, dt * 30);
   }
 
   applyTint() {
-    const fl = this.flash;
-    const t = this.tint, ta = this.tintAmt;
-    for (let i = 0; i < this.matList.length; i++) {
-      const m = this.matList[i];
-      m.color.copy(this.baseColors[i]);
-      m.emissive.setRGB(fl * 0.55, fl * 0.12, fl * 0.08);
-      if (t === 'frozen') {
-        m.color.lerp(_c.setRGB(0.6, 0.85, 1.0), ta * 0.8);
-        m.emissive.r += 0.05 * ta; m.emissive.g += 0.18 * ta; m.emissive.b += 0.3 * ta;
-      } else if (t === 'burn') {
-        m.color.multiplyScalar(1 - ta * 0.5);
-        const f = (0.3 + Math.random() * 0.3) * ta;
-        m.emissive.r += f; m.emissive.g += f * 0.35;
-      } else if (t === 'acid') {
-        // сначала зеленеет и дымится, потом остаются кости
-        const k1 = Math.min(1, ta), k2 = Math.max(0, Math.min(1, ta - 1));
-        m.color.lerp(_c.setRGB(0.35, 0.55, 0.12), k1 * 0.7).lerp(_c.setRGB(0.85, 0.82, 0.7), k2);
-        m.emissive.g += 0.08 * k1 * (1 - k2);
-      } else if (t === 'char') {
-        m.color.multiplyScalar(1 - ta * 0.85);
-        const f = Math.max(0, ta - 0.6) * (0.15 + Math.random() * 0.1);
-        m.emissive.r += f;
-      }
+    const fl = this.flash, t = this.tint, ta = this.tintAmt;
+    const m = this.material, u = m.userData.u;
+    m.color.setScalar(1);
+    m.emissive.setRGB(fl * 0.3, fl * 0.05, fl * 0.035);
+    u.uTint.value.set(0, 0, 0, 0);
+    u.uBlood.value = Math.min(1, this.bloodAmt);
+    if (t === 'frozen') {
+      u.uTint.value.set(0.62, 0.86, 1.0, ta * 0.72);
+      m.emissive.r += 0.03 * ta; m.emissive.g += 0.1 * ta; m.emissive.b += 0.18 * ta;
+    } else if (t === 'burn') {
+      m.color.setScalar(1 - ta * 0.5);
+      const f = (0.25 + Math.random() * 0.25) * ta;
+      m.emissive.r += f; m.emissive.g += f * 0.3;
+    } else if (t === 'acid') {
+      // сначала зеленеет и дымится, потом остаются кости
+      const k1 = Math.min(1, ta), k2 = Math.max(0, Math.min(1, ta - 1));
+      _c.setRGB(0.35, 0.55, 0.12).lerp(_c2.setRGB(0.86, 0.83, 0.72), k2);
+      u.uTint.value.set(_c.r, _c.g, _c.b, Math.max(k1 * 0.7, k2));
+      m.emissive.g += 0.06 * k1 * (1 - k2);
+    } else if (t === 'char') {
+      m.color.setScalar(1 - ta * 0.85);
+      m.emissive.r += Math.max(0, ta - 0.6) * (0.15 + Math.random() * 0.1);
     }
   }
 
-  updateMeshes() {
+  updateMeshes(dt = 0.016) {
     const P = this.pose;
-    const fwd = this.forward(new THREE.Vector3());
-    const ragdollish = this.mode === 'ragdoll';
-    // торс
-    const T = this.segs.torso;
-    if (T.attached) {
-      const left = _v1.subVectors(P[J.LSH], P[J.RSH]).add(_v2.subVectors(P[J.LHIP], P[J.RHIP]));
-      const upv = _v2.subVectors(P[J.NECK], P[J.PELVIS]).normalize();
-      const z = _v3.crossVectors(left, upv).normalize();
-      orient(T.group, P[J.PELVIS], P[J.NECK], z.clone(), T.z);
-    }
+    const fwd = this.forward(_fwd);
+    const rag = this.mode === 'ragdoll';
+    // ---- торс: таз и грудь поворачиваются раздельно (скручивание корпуса)
+    const T = this.segs.torso, C = this.segs.chest;
+    const upv = _a.subVectors(P[J.NECK], P[J.PELVIS]);
+    const M = this.spineMid.copy(P[J.PELVIS]).addScaledVector(upv, SPINE_SPLIT);
+    upv.normalize();
+    const lsh = _b.subVectors(P[J.LSH], P[J.RSH]).normalize();
+    const lhip = _cv.subVectors(P[J.LHIP], P[J.RHIP]).normalize();
+    if (rag) { lsh.add(lhip).normalize(); lhip.copy(lsh); } else lhip.lerp(lsh, 0.2).normalize();
+    const zC = _zc.crossVectors(lsh, upv).normalize();
+    const zH = _zh.crossVectors(lhip, upv).normalize();
+    if (!rag) M.addScaledVector(zC, -0.012 * this.scale);
+    orient(T.group, P[J.PELVIS], M, zH, T.z);
+    orient(C.group, M, P[J.NECK], zC, C.z);
+    const br = rag || this.frozen ? 0 : this.breath || 0;
+    C.group.scale.set(1 + br * 0.012, 1, 1 + br * 0.028);
+    this.skinTorso();
     for (const name in this.segs) {
-      if (name === 'torso') continue;
+      if (name === 'torso' || name === 'chest') continue;
       const sg = this.segs[name];
       if (!sg.attached) continue;
-      const zRef = ragdollish ? sg.z : (name === 'head' ? this.headZ(fwd) : fwd);
+      let zRef = fwd;
+      if (rag) zRef = sg.z;
+      else if (name === 'head') {
+        this.headFwd.lerp(this.headZ(zC), Math.min(1, dt * 9)).normalize();
+        zRef = this.headFwd;
+      }
       orient(sg.group, P[sg.a], P[sg.b], zRef, sg.z);
     }
-    // оружие
+    // ---- ступни остаются плоскими на земле
+    if (!rag) {
+      for (let i = 0; i < 2; i++) {
+        const sg = this.segs[i ? 'rshin' : 'lshin'];
+        if (!sg.attached || !sg.foot) continue;
+        const f = i ? this.feet.r : this.feet.l;
+        _e.set(f.pitch, this.facing + (i ? -0.16 : 0.16), 0, 'YXZ');
+        _q.copy(sg.group.quaternion).invert().multiply(_q2.setFromEuler(_e));
+        sg.foot.quaternion.slerp(_q, Math.min(1, dt * 25));
+      }
+    }
+    // ---- оружие
     if (this.weapon && this.weaponAttached) {
       const hand = P[J.RHA];
-      const dir = new THREE.Vector3();
+      const dir = _wd;
       if (this.mode === 'anim' || this.mode === 'blend') {
         this.dirToWorld(this.anim.wdir, dir).normalize();
         if (this.mode === 'blend') dir.lerp(_v1.subVectors(P[J.RHA], P[J.REL]).normalize(), 1 - Math.min(1, this.blendT)).normalize();
@@ -562,19 +502,46 @@ export class Character {
       if (x.lengthSq() < 1e-6) x.set(1, 0, 0).addScaledVector(dir, -dir.x);
       x.normalize();
       this.weaponX.lerp(x, 0.5).normalize();
-      const z = new THREE.Vector3().crossVectors(this.weaponX, dir).normalize();
-      const xx = new THREE.Vector3().crossVectors(dir, z);
+      const z = _a.crossVectors(this.weaponX, dir).normalize();
+      const xx = _b.crossVectors(dir, z);
       _m.makeBasis(xx, dir, z);
       this.weapon.group.quaternion.setFromRotationMatrix(_m);
       this.weapon.group.position.copy(hand);
     }
   }
 
-  headZ(fwd) {
-    if (!this.anim.look) return fwd;
-    const d = _v3.subVectors(this.anim.look, this.pose[J.HEAD]);
+  // «Кожа» торса: вершины смешиваются между системой таза и груди.
+  skinTorso() {
+    const sk = this.torsoSkin;
+    if (!sk || !this.group.visible) return;
+    const T = this.segs.torso.group, C = this.segs.chest.group;
+    T.updateMatrix(); C.updateMatrix();
+    const a = T.matrix.elements, b = C.matrix.elements;
+    const P = sk.geo.attributes.position.array, N = sk.geo.attributes.normal.array;
+    const R = sk.rest, RN = sk.restN, W = sk.w, Lh = sk.Lh;
+    for (let i = 0, n = W.length; i < n; i++) {
+      const j = i * 3;
+      const x = R[j], y = R[j + 1], z = R[j + 2], w = W[i], u = 1 - w, yc = y - Lh;
+      P[j] = u * (a[0] * x + a[4] * y + a[8] * z + a[12]) + w * (b[0] * x + b[4] * yc + b[8] * z + b[12]);
+      P[j + 1] = u * (a[1] * x + a[5] * y + a[9] * z + a[13]) + w * (b[1] * x + b[5] * yc + b[9] * z + b[13]);
+      P[j + 2] = u * (a[2] * x + a[6] * y + a[10] * z + a[14]) + w * (b[2] * x + b[6] * yc + b[10] * z + b[14]);
+      const nx = RN[j], ny = RN[j + 1], nz = RN[j + 2];
+      N[j] = u * (a[0] * nx + a[4] * ny + a[8] * nz) + w * (b[0] * nx + b[4] * ny + b[8] * nz);
+      N[j + 1] = u * (a[1] * nx + a[5] * ny + a[9] * nz) + w * (b[1] * nx + b[5] * ny + b[9] * nz);
+      N[j + 2] = u * (a[2] * nx + a[6] * ny + a[10] * nz) + w * (b[2] * nx + b[6] * ny + b[10] * nz);
+    }
+    sk.geo.attributes.position.needsUpdate = true;
+    sk.geo.attributes.normal.needsUpdate = true;
+  }
+
+  // Направление взгляда головы: к цели, но не больше ~70° от груди.
+  headZ(chestFwd) {
+    if (!this.anim.look) return chestFwd;
+    const d = _hz.subVectors(this.anim.look, this.pose[J.HEAD]);
     d.y *= 0.5;
-    return d.normalize();
+    d.normalize();
+    if (d.dot(chestFwd) < 0.35) d.lerp(chestFwd, 0.6).normalize();
+    return d;
   }
 
   // ===== Хитбоксы =====
@@ -614,9 +581,9 @@ export class Character {
 
   // ===== Реакции =====
   react(dirWorld, strength) {
-    this.dirToLocal(dirWorld, this.anim.react).multiplyScalar(strength);
-    this.anim.react.y = Math.max(-0.05, this.anim.react.y);
-    this.anim.reactT = 0.35;
+    this.dirToLocal(dirWorld, _v1);
+    _v1.y = Math.max(-0.05, _v1.y);
+    this.spr.reactV.addScaledVector(_v1, strength * 15);
   }
 
   // Перевод в рэгдолл (смерть или нокдаун).
@@ -659,6 +626,8 @@ export class Character {
     this.root.set(this.pose[J.PELVIS].x, 0, this.pose[J.PELVIS].z);
     this.facing = facing;
     this.mode = 'blend';
+    this.feet.init = false;
+    this.spr.init = false;
     this.blendT = 0;
     this.blendDur = 0.75;
     this.ragdoll = null;
@@ -729,7 +698,7 @@ export class Character {
     // культя на теле
     const stumpName = part.replace('fore', 'arm').replace('shin', 'leg');
     if (part === 'head' || part === 'larm' || part === 'rarm' || part === 'lleg' || part === 'rleg') {
-      for (const c of this.segs.torso.caps) if (c.name === stumpName) c.mesh.visible = true;
+      for (const c of [...this.segs.torso.caps, ...this.segs.chest.caps]) if (c.name === stumpName) c.mesh.visible = true;
     } else {
       const upperName = part === 'lfore' ? 'lupper' : part === 'rfore' ? 'rupper' : part === 'lshin' ? 'lthigh' : 'rthigh';
       for (const c of this.segs[upperName].caps) if (c.name === 'end') c.mesh.visible = true;
@@ -747,7 +716,7 @@ export class Character {
     for (const name of def.segs) { this.segs[name].attached = false; this.segs[name].group.visible = false; }
     for (const j of def.rest) this.missing.add(j);
     this.severed.add(part);
-    for (const c of this.segs.torso.caps) if (c.name === part) c.mesh.visible = true;
+    for (const c of [...this.segs.torso.caps, ...this.segs.chest.caps]) if (c.name === part) c.mesh.visible = true;
     if (this.ragdoll) this.ragdoll.c = this.ragdoll.c.filter((c) => !this.missing.has(c.a) && !this.missing.has(c.b));
   }
 
@@ -757,7 +726,7 @@ export class Character {
 
   dispose() {
     this.group.removeFromParent();
-    for (const m of this.matList) m.dispose();
+    this.material.dispose();
     for (const g of this.ownGeos || []) g.dispose();
   }
 }

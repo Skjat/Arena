@@ -3,6 +3,8 @@ import * as THREE from 'three';
 import { WEAPONS, WEAPON_TYPES, ARMOR, MAGIC_UPGRADES } from './data.js';
 import { buildWeapon, setBloodiness } from './weapons3d.js';
 import { Trail } from './fx.js';
+import { lathe, tube, ball, matOf, PartBuilder } from './meshkit.js';
+import { bodyMaterial } from './gfx.js';
 import { ARENA_R } from './arena.js';
 
 const EYE = 1.62;
@@ -84,45 +86,64 @@ export class Player {
     this.vmScale = w.type === 'spear' ? 0.62 : w.type === 'greatsword' ? 0.66 : 0.74;
     w.group.scale.setScalar(this.vmScale);
     this.hand.add(w.group);
-    const skin = new THREE.MeshStandardMaterial({ color: 0xd8a888, roughness: 0.7 });
-    const glove = this.handsLook ? new THREE.MeshStandardMaterial({ color: this.handsLook.color, roughness: this.handsLook.look === 'gauntlets' ? 0.35 : 0.8, metalness: this.handsLook.look === 'gauntlets' ? 0.8 : 0 }) : skin;
-    this.gloveMat = glove;
-    const fist = new THREE.Mesh(new THREE.BoxGeometry(0.075, 0.1, 0.085), glove);
-    fist.position.set(0.0, 0.0, 0.0);
-    this.hand.add(fist);
-    const thumb = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.05, 0.03), glove);
-    thumb.position.set(-0.03, 0.04, 0.03);
-    this.hand.add(thumb);
-    const sleeveMat = new THREE.MeshStandardMaterial({ color: 0x5a4030, roughness: 0.9 });
-    this.forearm = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.055, 1, 8), glove === skin ? skin : glove);
+    // материалы рук: кожа либо перчатки/латные рукавицы
+    const HL = this.handsLook;
+    const skin = matOf(0xd8a888, 0.6);
+    const gl = HL ? matOf(HL.color, HL.look === 'gauntlets' ? 0.36 : 0.8, HL.look === 'gauntlets' ? 0.9 : 0) : skin;
+    const gl2 = HL ? { c: gl.c.clone().multiplyScalar(0.7), r: gl.r, m: gl.m } : matOf(0xb88a6c, 0.62);
+    const sleeve = matOf(0x4a3424, 0.9), brace = matOf(0x3a2616, 0.8), stud = matOf(0xb8923e, 0.35, 0.9);
+    this.vmMat = bodyMaterial();
+    const B = new PartBuilder();
+    // --- правая кисть: кулак вокруг рукояти (ось рукояти — Y)
+    const finger = new THREE.TorusGeometry(0.027, 0.0105, 6, 12, Math.PI * 1.35);
+    for (let i = 0; i < 4; i++) {
+      B.add(this.hand, finger, i % 2 ? gl2 : gl, [0, 0.033 - i * 0.021, 0.004], [1, 1, 1.05], [Math.PI / 2, 0, -0.35]);
+    }
+    B.add(this.hand, ball(12, 10), gl, [0.012, -0.002, 0.03], [0.036, 0.05, 0.03]);
+    B.add(this.hand, tube([[0.03, 0.0, 0.03], [0.012, 0.035, 0.0], [-0.016, 0.05, -0.022]], (t) => 0.0125 - t * 0.003, { radial: 7, segs: 6 }), gl);
+    B.add(this.hand, ball(10, 8), gl, [0.022, -0.045, 0.045], [0.03, 0.03, 0.03]);
+    // --- предплечья (единичной длины, растягиваются по Y)
+    const foreGeo = lathe([[0, 0.052], [0.3, 0.05], [0.75, 0.036], [1, 0.03]], { radial: 12, rings: 8, roundA: true, cuts: [0.42, 0.9] });
+    const foreMat = (p) => (p.y > 0.9 ? gl : p.y > 0.42 ? brace : sleeve);
+    this.forearm = new THREE.Group();
     this.vm.add(this.forearm);
-    this.sleeve = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.07, 1, 8), sleeveMat);
+    B.add(this.forearm, foreGeo, foreMat);
+    for (let i = 0; i < 3; i++) B.add(this.forearm, ball(6, 5), stud, [0, 0.5 + i * 0.14, 0.04 - i * 0.004], [0.008, 0.004, 0.006]);
+    this.sleeve = new THREE.Group();
     this.vm.add(this.sleeve);
-    // Левая рука (магия)
+    B.add(this.sleeve, lathe([[0, 0.075], [0.5, 0.068], [1, 0.058]], { radial: 12, rings: 5, roundB: true }), sleeve);
+    // --- левая рука (магия): раскрытая ладонь
     this.lhand = new THREE.Group();
     this.vm.add(this.lhand);
-    const lfist = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.1, 0.04), glove);
-    this.lhand.add(lfist);
-    for (let i = 0; i < 4; i++) {
-      const f = new THREE.Mesh(new THREE.BoxGeometry(0.016, 0.06, 0.018), glove);
-      f.position.set(-0.027 + i * 0.018, 0.075, 0.0);
-      f.rotation.x = -0.3;
-      this.lhand.add(f);
+    B.add(this.lhand, ball(12, 10), gl, [0, 0.0, 0], [0.04, 0.046, 0.016]);
+    const fl = [[-0.03, 0.06, -0.38], [-0.011, 0.07, -0.12], [0.009, 0.068, 0.1], [0.027, 0.058, 0.32]];
+    for (const [fx, len, splay] of fl) {
+      const base = [fx, 0.04, 0];
+      const tip = [fx + Math.sin(splay) * len, 0.04 + Math.cos(splay) * len, 0.022];
+      const mid = [(base[0] + tip[0]) / 2, (base[1] + tip[1]) / 2, -0.004];
+      B.add(this.lhand, tube([base, mid, tip], (t) => 0.0095 - t * 0.003, { radial: 6, segs: 6 }), gl);
     }
-    this.lforearm = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.055, 1, 8), glove === skin ? skin : glove);
+    B.add(this.lhand, tube([[-0.036, 0.005, 0.004], [-0.06, 0.03, 0.016], [-0.066, 0.058, 0.03]], (t) => 0.011 - t * 0.003, { radial: 6, segs: 5 }), gl);
+    this.lforearm = new THREE.Group();
     this.vm.add(this.lforearm);
+    B.add(this.lforearm, foreGeo, foreMat);
+    this.vmGeos = B.build(this.vmMat, false);
     const glowMat = new THREE.MeshBasicMaterial({ color: 0x66ccff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false });
-    this.palmGlow = new THREE.Mesh(new THREE.SphereGeometry(0.035, 12, 10), glowMat);
-    this.palmGlow.position.set(0, 0.05, 0.05);
+    this.palmGlow = new THREE.Mesh(new THREE.SphereGeometry(0.035, 14, 10), glowMat);
+    this.palmGlow.position.set(0, 0.03, 0.05);
     this.lhand.add(this.palmGlow);
     this.lhandAmt = 0;
     this.trail = new Trail(this.battle.scene, 0xffffff, 16);
     this.vmState = { h: new THREE.Vector3(0.26, -0.28, -0.45), d: new THREE.Vector3(-0.25, 0.8, -0.55).normalize(), x: new THREE.Vector3(1, 0, 0) };
+    this.sway = new THREE.Vector3();
+    this.prevYaw = this.yaw; this.prevPitch = this.pitch;
   }
 
   dispose() {
     this.vm.removeFromParent();
     this.trail.mesh.removeFromParent();
+    this.vmMat.dispose();
+    for (const g of this.vmGeos || []) g.dispose();
   }
 
   // Луч из камеры через точку NDC в локальных координатах камеры.
@@ -466,8 +487,22 @@ export class Player {
     if (this.wtype === WEAPON_TYPES.spear) { idleH.set(0.2, -0.26, -0.35); idleD.set(-0.12, 0.25, -1).normalize(); idleX.set(1, 0, 0); }
     if (this.wtype === WEAPON_TYPES.dagger) { idleD.set(-0.15, 0.6, -0.8).normalize(); }
     const blockH = new THREE.Vector3(0.05, -0.12, -0.4), blockD = new THREE.Vector3(-1, 0.22, -0.3).normalize(), blockX = new THREE.Vector3(0, 1, 0.2).normalize();
+    // инерция оружия: при повороте камеры и стрейфе оружие чуть отстаёт
+    let dyaw = this.yaw - this.prevYaw;
+    while (dyaw > Math.PI) dyaw -= Math.PI * 2;
+    while (dyaw < -Math.PI) dyaw += Math.PI * 2;
+    const idt = 1 / Math.max(dt, 1e-3);
+    const r0 = this.right(_v);
+    const side = this.vel.x * r0.x + this.vel.z * r0.z;
+    const tx = Math.max(-0.07, Math.min(0.07, dyaw * idt * 0.014 - side * 0.006));
+    const ty = Math.max(-0.05, Math.min(0.05, -(this.pitch - this.prevPitch) * idt * 0.012));
+    this.prevYaw = this.yaw; this.prevPitch = this.pitch;
+    const sk = Math.min(1, dt * 9);
+    this.sway.x += (tx - this.sway.x) * sk; this.sway.y += (ty - this.sway.y) * sk;
+    idleH.x += this.sway.x; idleH.y += this.sway.y;
+    idleD.x += this.sway.x * 1.6; idleD.y -= this.sway.y * 0.8; idleD.normalize();
     let H = idleH.clone(), D = idleD.clone(), X = idleX.clone();
-    if (this.blockAmt > 0.01) { H.lerp(blockH, this.blockAmt); D.lerp(blockD, this.blockAmt).normalize(); X.lerp(blockX, this.blockAmt).normalize(); }
+    if (this.blockAmt > 0.01) { blockH.x += this.sway.x * 0.6; blockH.y += this.sway.y * 0.6; H.lerp(blockH, this.blockAmt); D.lerp(blockD, this.blockAmt).normalize(); X.lerp(blockX, this.blockAmt).normalize(); }
     let trail = false;
     if (this.state === 'swing' && this.swing) {
       const s = this.swing;
@@ -531,17 +566,17 @@ export class Player {
     // левая рука
     const castOn = this.battle.runeMode || this.castGlow > 0.05;
     this.lhandAmt += ((castOn ? 1 : 0) - this.lhandAmt) * Math.min(1, dt * 10);
-    const lh = new THREE.Vector3(-0.22, -0.55 + this.lhandAmt * 0.32, -0.42);
+    const lh = new THREE.Vector3(-0.23 + this.sway.x * 0.5, -0.56 + this.lhandAmt * 0.43 + Math.sin(this.time * 2.3) * 0.006, -0.46);
     this.lhand.position.copy(lh);
-    this.lhand.rotation.set(-0.4 + this.lhandAmt * 0.2, 0.3, 0.2);
+    this.lhand.rotation.set(-0.75 + this.lhandAmt * 0.25, 0.35, 0.25 + Math.sin(this.time * 3.1) * 0.04);
     this.lhand.visible = this.lhandAmt > 0.02;
     this.lforearm.visible = this.lhand.visible;
-    this.placeLimb(this.lforearm, new THREE.Vector3(-0.3, -0.85, -0.1), lh);
+    this.placeLimb(this.lforearm, new THREE.Vector3(-0.34, -0.9, -0.08), lh.clone().add(new THREE.Vector3(0, -0.03, 0.01)));
     this.castGlow = Math.max(0, this.castGlow - dt * 2);
     const g = Math.max(this.battle.runeMode ? 0.6 : 0, this.castGlow);
     this.palmGlow.material.opacity = g * (0.55 + Math.sin(this.time * 25) * 0.15);
     this.palmGlow.material.color.copy(this.castColor);
-    this.palmGlow.scale.setScalar(0.7 + g * 0.8);
+    this.palmGlow.scale.setScalar(0.8 + g * 1.0);
     // след клинка (мировые координаты)
     if (trail) {
       const cam = this.camera;
@@ -558,7 +593,7 @@ export class Player {
   placeLimb(mesh, a, b) {
     const d = new THREE.Vector3().subVectors(b, a);
     const L = d.length();
-    mesh.position.copy(a).addScaledVector(d, 0.5);
+    mesh.position.copy(a);
     mesh.scale.set(1, L, 1);
     mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), d.normalize());
   }

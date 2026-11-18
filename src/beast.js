@@ -2,6 +2,8 @@
 import * as THREE from 'three';
 import { Ragdoll } from './physics.js';
 import { ik2, orient } from './character.js';
+import { lathe, ball, matOf, PartBuilder, mergeParts } from './meshkit.js';
+import { bodyMaterial } from './gfx.js';
 import { ARENA_R } from './arena.js';
 
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
@@ -70,11 +72,11 @@ export class Beast {
 
   buildMeshes() {
     const s = this.s, K = this.K;
-    const std = (c, r = 0.9) => new THREE.MeshStandardMaterial({ color: c, roughness: r });
-    this.mats = { fur: std(K.fur), belly: std(K.belly), dark: std(0x141010), teeth: std(0xe8e0c8, 0.5), iron: new THREE.MeshStandardMaterial({ color: 0x4a4a4e, metalness: 0.8, roughness: 0.45 }) };
-    this.eyeMat = new THREE.MeshBasicMaterial({ color: 0xff3010 });
-    this.matList = [this.mats.fur, this.mats.belly];
-    this.baseColors = this.matList.map((m) => m.color.clone());
+    const bear = this.kind === 'bear';
+    const fur = matOf(K.fur, 0.97), furD = { c: new THREE.Color(K.fur).multiplyScalar(0.6), r: 0.97, m: 0 }, belly = matOf(K.belly, 0.95);
+    const dark = matOf(0x120e0c, 0.7), teeth = matOf(0xe8e0c8, 0.45), iron = matOf(0x4a4a4e, 0.45, 0.85), gum = matOf(0x5a1418, 0.5);
+    this.material = bodyMaterial();
+    this.eyeMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(3.0, 0.5, 0.1) });
     this.group = new THREE.Group();
     this.scene.add(this.group);
     this.segs = {};
@@ -83,46 +85,73 @@ export class Beast {
       this.group.add(g);
       this.segs[name] = { group: g, a, b, z: V(0, 1, 0) };
     }
-    const add = (seg, geo, mat, x, y, z, sx = 1, sy = 1, sz = 1) => {
-      const m = new THREE.Mesh(geo, mat);
-      m.position.set(x, y, z); m.scale.set(sx, sy, sz); m.castShadow = true;
-      this.segs[seg].group.add(m);
-      return m;
-    };
-    const cap = (r, l) => { const g = new THREE.CapsuleGeometry(r, l, 3, 8); g.translate(0, l / 2, 0); return g; };
+    const B = new PartBuilder();
+    const G = (n) => this.segs[n].group;
     const L = 0.95 * s;
-    // тело: ось Y от бёдер к шее, Z — вверх
-    add('body', cap(0.24 * s, L - 0.1 * s), this.mats.fur, 0, -0.05 * s, 0, 1, 1, 1.1);
-    add('body', new THREE.SphereGeometry(0.28 * s, 10, 8), this.mats.fur, 0, L * 0.85, 0.02 * s, 1, 1, 1.12);
-    add('body', new THREE.SphereGeometry(0.2 * s, 10, 8), this.mats.belly, 0, L * 0.5, -0.1 * s, 1.1, 1.6, 0.9);
-    for (let i = 0; i < 6; i++) {
-      const c = add('body', new THREE.ConeGeometry(0.05 * s, 0.18 * s, 5), this.mats.dark, 0, L * (0.25 + i * 0.12), 0.26 * s);
-      c.rotation.x = -0.4;
+    const fat = bear ? 1.22 : 1;
+    // --- тело: ось Y от бёдер к шее, Z — вверх. Глубокая грудь, подтянутый живот, тёмная спина.
+    B.add(G('body'), lathe([[-0.12 * s, 0.1 * s], [0, 0.2 * s * fat], [L * 0.35, 0.215 * s * fat], [L * 0.72, 0.27 * s * fat], [L, 0.24 * s * fat], [L + 0.14 * s, 0.15 * s]],
+      { radial: 16, rings: 12, capA: true, capB: true, sx: 0.82, sz: 1.0, shift: (t) => [0, (bear ? -0.01 : 0.035) * s * Math.sin(Math.min(1, t * 1.6) * Math.PI) * (1 - t)] }),
+      (p) => (p.z > 0.12 * s ? furD : p.z < -0.14 * s ? belly : fur));
+    // загривок: шерсть гребнем
+    for (let i = 0; i < 9; i++) {
+      const y = L * (0.2 + i * 0.1), h = (0.07 + Math.sin(i / 8 * Math.PI) * 0.07) * s * (bear ? 0.6 : 1);
+      B.add(G('body'), lathe([[0, 0.05 * s], [h, 0.004 * s]], { radial: 6, rings: 3, capB: true, sx: 0.55 }), furD, [0, y, (0.2 + Math.sin(i / 8 * Math.PI) * 0.06) * s * fat], 1, [Math.PI / 2 - 0.5, 0, 0]);
     }
-    // голова: ось Y от шеи к голове
+    // --- голова: ось Y от шеи к морде, Z — вверх
     const H = 0.46 * s;
-    add('head', cap(0.13 * s, H * 0.6), this.mats.fur, 0, 0, 0);
-    add('head', new THREE.BoxGeometry(0.26 * s, 0.22 * s, 0.24 * s), this.mats.fur, 0, H, 0.02 * s);
-    add('head', new THREE.BoxGeometry(0.15 * s, 0.22 * s, 0.12 * s), this.mats.dark, 0, H + 0.18 * s, -0.02 * s);
-    this.jawMesh = add('head', new THREE.BoxGeometry(0.13 * s, 0.2 * s, 0.05 * s), this.mats.fur, 0, H + 0.15 * s, -0.09 * s);
-    for (const sx of [-1, 1]) {
-      add('head', new THREE.BoxGeometry(0.05 * s, 0.035 * s, 0.03 * s), this.eyeMat, sx * 0.085 * s, H + 0.06 * s, 0.11 * s);
-      const ear = add('head', new THREE.ConeGeometry(0.05 * s, 0.13 * s, 4), this.mats.fur, sx * 0.09 * s, H - 0.04 * s, 0.15 * s);
-      ear.rotation.x = -0.5;
-      for (let t = 0; t < 2; t++) {
-        const tooth = add('head', new THREE.ConeGeometry(0.012 * s, 0.05 * s, 4), this.mats.teeth, sx * (0.03 + t * 0.03) * s, H + 0.27 * s, -0.05 * s);
-        tooth.rotation.x = Math.PI;
+    B.add(G('head'), lathe([[-0.06 * s, 0.17 * s * fat], [H * 0.5, 0.14 * s * fat], [H * 0.9, 0.125 * s]], { radial: 12, rings: 6, sx: 0.85 }), (p) => (p.z > 0.08 * s ? furD : fur));
+    B.add(G('head'), ball(14, 10), fur, [0, H, 0.015 * s], [0.125 * s * (bear ? 1.15 : 1), 0.14 * s, 0.12 * s]);
+    const snoutL = (bear ? 0.2 : 0.3) * s;
+    B.add(G('head'), lathe([[0, 0.092 * s], [snoutL * 0.6, 0.068 * s], [snoutL, 0.05 * s]], { radial: 10, rings: 6, roundB: true, sx: bear ? 1.05 : 0.85, sz: 0.72 }), fur, [0, H + 0.06 * s, 0.0]);
+    B.add(G('head'), ball(8, 6), dark, [0, H + 0.075 * s + snoutL, 0.016 * s], [0.03 * s, 0.022 * s, 0.022 * s]);
+    for (const sx of [1, -1]) {
+      // уши, надбровья, клыки верхней челюсти
+      const ear = bear ? ball(8, 6) : lathe([[0, 0.045 * s], [0.13 * s, 0.004 * s]], { radial: 6, rings: 4, capB: true, sz: 0.5 });
+      if (bear) B.add(G('head'), ear, fur, [sx * 0.1 * s, H - 0.03 * s, 0.12 * s], [0.045 * s, 0.03 * s, 0.05 * s]);
+      else B.add(G('head'), ear, fur, [sx * 0.085 * s, H - 0.06 * s, 0.1 * s], 1, [Math.PI / 2 - 0.35, 0, -sx * 0.25]);
+      B.add(G('head'), ball(8, 6), furD, [sx * 0.065 * s, H + 0.07 * s, 0.085 * s], [0.045 * s, 0.03 * s, 0.022 * s], [0, 0, -sx * 0.5]);
+      for (let t = 0; t < 3; t++) {
+        const fang = lathe([[0, (t === 0 ? 0.013 : 0.008) * s], [(t === 0 ? 0.06 : 0.03) * s, 0.001]], { radial: 5, rings: 2, capB: true });
+        B.add(G('head'), fang, teeth, [sx * (0.032 + t * 0.006) * s, H + 0.06 * s + snoutL * (0.92 - t * 0.25), -0.03 * s], 1, [-Math.PI / 2, 0, 0]);
       }
     }
-    // ошейник
-    const collar = add('head', new THREE.TorusGeometry(0.15 * s, 0.03 * s, 6, 12), this.mats.iron, 0, 0.06 * s, 0);
-    collar.rotation.x = Math.PI / 2;
-    add('tail', cap(0.04 * s, 0.5 * s), this.mats.fur, 0, 0, 0);
-    for (const leg of ['fl', 'fr', 'bl', 'br']) {
-      add('u' + leg, cap(0.075 * s, 0.3 * s), this.mats.fur, 0, 0, 0);
-      add('l' + leg, cap(0.055 * s, 0.3 * s), this.mats.fur, 0, 0, 0);
-      add('l' + leg, new THREE.BoxGeometry(0.11 * s, 0.07 * s, 0.14 * s), this.mats.dark, 0, 0.37 * s, 0.03 * s);
+    {
+      const eg = mergeParts([1, -1].map((sx) => ({ geo: ball(8, 6), mat: fur, pos: [sx * 0.068 * s, H + 0.075 * s, 0.062 * s], scale: [0.02 * s, 0.022 * s, 0.014 * s] })));
+      const eyes = new THREE.Mesh(eg, this.eyeMat);
+      G('head').add(eyes);
+      this.eyeGeo = eg;
     }
+    // ошейник с кольцом
+    B.add(G('head'), new THREE.TorusGeometry(0.165 * s * fat, 0.028 * s, 6, 16), iron, [0, 0.05 * s, 0], [0.86, 1, 1], [Math.PI / 2, 0, 0]);
+    B.add(G('head'), new THREE.TorusGeometry(0.04 * s, 0.01 * s, 5, 10), iron, [0, 0.05 * s, 0.2 * s * fat]);
+    // нижняя челюсть — отдельный меш (открывается)
+    const jawGeo = mergeParts([
+      { geo: lathe([[0, 0.07 * s], [snoutL * 0.6, 0.052 * s], [snoutL * 0.95, 0.036 * s]], { radial: 10, rings: 5, roundB: true, sx: bear ? 1.0 : 0.82, sz: 0.4 }), mat: fur },
+      { geo: ball(8, 5), mat: gum, pos: [0, snoutL * 0.45, 0.018 * s], scale: [0.04 * s, snoutL * 0.42, 0.01 * s] },
+      ...[1, -1].map((sx) => ({ geo: lathe([[0, 0.011 * s], [0.05 * s, 0.001]], { radial: 5, rings: 2, capB: true }), mat: teeth, pos: [sx * 0.028 * s, snoutL * 0.86, 0.02 * s], rot: [Math.PI / 2, 0, 0] }))
+    ]);
+    this.jawMesh = new THREE.Mesh(jawGeo, this.material);
+    this.jawMesh.position.set(0, H + 0.05 * s, -0.045 * s);
+    this.jawMesh.castShadow = false;
+    G('head').add(this.jawMesh);
+    // --- хвост
+    if (bear) B.add(G('tail'), ball(8, 6), furD, [0, 0.05 * s, 0], [0.06 * s, 0.08 * s, 0.06 * s]);
+    else B.add(G('tail'), lathe([[0, 0.05 * s], [0.2 * s, 0.065 * s], [0.52 * s, 0.012 * s]], { radial: 8, rings: 7, roundA: true, capB: true }), (p) => (p.y > 0.4 * s ? furD : fur));
+    // --- ноги с лапами
+    const lu = 0.36 * s, ll = 0.38 * s;
+    for (const leg of ['fl', 'fr', 'bl', 'br']) {
+      const front = leg[0] === 'f';
+      const lf = bear ? 1.6 : 1.15;
+      B.add(G('u' + leg), lathe([[0, (front ? 0.095 : 0.115) * s * lf], [lu * 0.5, 0.08 * s * lf], [lu, 0.056 * s * lf]], { radial: 9, rings: 6, roundA: true, roundB: true }), fur);
+      B.add(G('l' + leg), lathe([[0, 0.056 * s * lf], [ll * 0.6, 0.044 * s * lf], [ll, 0.046 * s * lf]], { radial: 9, rings: 6, roundA: true }), fur);
+      B.add(G('l' + leg), ball(10, 6), furD, [0, ll + 0.015 * s, 0.035 * s], [0.06 * s * fat, 0.04 * s, 0.085 * s * fat]);
+      for (let c = -1; c <= 1; c++) B.add(G('l' + leg), lathe([[0, 0.012 * s], [0.045 * s, 0.001]], { radial: 5, rings: 2, capB: true }), teeth, [c * 0.03 * s * fat, ll + 0.02 * s, 0.11 * s * fat], 1, [Math.PI / 2 + 0.3, 0, 0]);
+    }
+    this.ownGeos = B.build(this.material);
+    this.ownGeos.push(jawGeo, this.eyeGeo);
+    // мелкие части не отбрасывают тень (экономия вызовов отрисовки)
+    for (const n of ['tail', 'lfl', 'lfr', 'lbl', 'lbr']) for (const m of G(n).children) m.castShadow = false;
   }
 
   buildChain() {
@@ -159,7 +188,7 @@ export class Beast {
     const bob = sp > 0.3 ? Math.abs(Math.sin(this.phase)) * 0.05 * s : Math.sin(this.time * 2) * 0.01;
     const crouch = this.state === 'windup' ? 0.12 * s : 0;
     const rear = this.rear;
-    const H = 0.78 * s - crouch + bob;
+    const H = (this.kind === 'bear' ? 0.66 : 0.7) * s - crouch + bob;
     P[BJ.HIP].set(0, H - 0.02 * s, -0.48 * s);
     // встать на дыбы: перед поднимается
     P[BJ.NECK].set(0, H + 0.05 * s + rear * 0.6 * s, 0.47 * s - rear * 0.25 * s);
@@ -182,7 +211,7 @@ export class Beast {
       if (front && rear > 0.05) { fz = base.z + 0.25 * s * rear; fy = base.y - 0.45 * s; }
       else if (sp > 0.3) { fz += Math.sin(this.phase + ph) * stride; fy += Math.max(0, Math.cos(this.phase + ph)) * 0.13 * s; }
       const target = V(base.x * 1.05, fy, fz);
-      ik2(base, target, lu, ll, V(0, 0.2, -1), P[kn], P[ft]);
+      ik2(base, target, lu, ll, front ? V(0, 0.1, -1) : V(0, 0.25, 1), P[kn], P[ft]);
     }
     for (let i = 0; i < NB; i++) this.toWorld(P[i], this.pose[i]);
   }
@@ -198,13 +227,10 @@ export class Beast {
       else zRef = name === 'body' || name === 'tail' ? up : (name === 'head' ? up.clone().addScaledVector(fwd, -0.3) : fwd);
       orient(sg.group, P[sg.a], P[sg.b], zRef, sg.z);
     }
-    this.jawMesh.rotation.x = -this.jaw * 0.6;
-    this.jawMesh.position.z = -0.09 * this.s - this.jaw * 0.05;
-    // вспышка при попадании
-    for (let i = 0; i < this.matList.length; i++) {
-      this.matList[i].color.copy(this.baseColors[i]);
-      this.matList[i].emissive.setRGB(this.flash * 0.6, this.flash * 0.1, this.flash * 0.05);
-    }
+    this.jawMesh.rotation.x = -this.jaw * 0.75;
+    // вспышка при попадании, кровь на шкуре
+    this.material.emissive.setRGB(this.flash * 0.6, this.flash * 0.1, this.flash * 0.05);
+    this.material.userData.u.uBlood.value = Math.min(0.9, 1 - this.hp / this.maxHp);
   }
 
   chest(out = V()) {
@@ -403,7 +429,7 @@ export class Beast {
     const pos = this.pose.map((p, i) => { const q = p.clone(); if (q.y < radii[i]) q.y = radii[i]; return q; });
     this.ragdoll = new Ragdoll(pos, vel, radii, cons);
     for (const sg of Object.values(this.segs)) sg.z.set(0, 1, 0);
-    this.eyeMat.color.setHex(0x220000);
+    this.eyeMat.color.setRGB(0.08, 0, 0);
     this.ctx.sound.yelp();
   }
 
@@ -420,6 +446,7 @@ export class Beast {
 
   dispose() {
     this.group.removeFromParent();
-    for (const m of Object.values(this.mats)) m.dispose();
+    this.material.dispose();
+    for (const g of this.ownGeos || []) g.dispose();
   }
 }

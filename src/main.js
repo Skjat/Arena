@@ -10,18 +10,21 @@ import { Character } from './character.js';
 import { loadSave, writeSave, resetSave } from './save.js';
 import { WEAPONS, ARMOR, SPELLS, MAGIC_UPGRADES, ARCHETYPES, getFight, ARENAS, ARENA_ORDER, FORMATS, FORMAT_ORDER, rewardMult } from './data.js';
 import { Hazards } from './hazards.js';
+import { PostFX } from './gfx.js';
 import { SPELL_GLYPH } from './gesture.js';
 
 class Game {
   constructor() {
     this.save = loadSave();
     this.canvas = document.getElementById('gl');
-    const renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true, powerPreference: 'high-performance' });
+    const renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: false, powerPreference: 'high-performance' });
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.05;
     renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFShadowMap;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer = renderer;
+    renderer.info.autoReset = false;
+    this.post = new PostFX(renderer);
     this.scene = new THREE.Scene();
     this.camera = new THREE.PerspectiveCamera(72, window.innerWidth / window.innerHeight, 0.04, 400);
     this.scene.add(this.camera);
@@ -89,6 +92,13 @@ class Game {
     this.dpr = q === 'auto' ? Math.min(dev, 2) : this.dprCap;
     this.renderer.shadowMap.enabled = q !== 'low';
     this.arena.sun.castShadow = q !== 'low';
+    this.post.enabled = q !== 'low';
+    this.post.samples = q === 'medium' ? 2 : 4;
+    const sm = q === 'medium' ? 1024 : 2048;
+    if (this.arena.sun.shadow.mapSize.x !== sm) {
+      this.arena.sun.shadow.mapSize.set(sm, sm);
+      if (this.arena.sun.shadow.map) { this.arena.sun.shadow.map.dispose(); this.arena.sun.shadow.map = null; }
+    }
     this.renderer.setPixelRatio(this.dpr);
     this.resize();
   }
@@ -98,7 +108,9 @@ class Game {
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
-    const H = this.renderer.getDrawingBufferSize(new THREE.Vector2()).y;
+    const db = this.renderer.getDrawingBufferSize(new THREE.Vector2());
+    if (this.post) this.post.setSize(db.x, db.y);
+    const H = db.y;
     const scale = H / (2 * Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2));
     if (this.fx) { this.fx.add.mat.uniforms.scale.value = scale; this.fx.norm.mat.uniforms.scale.value = scale; }
   }
@@ -110,8 +122,14 @@ class Game {
     if (this.frameTimes.length < 90) return;
     const avg = this.frameTimes.reduce((a, b) => a + b, 0) / this.frameTimes.length;
     this.frameTimes = [];
-    if (avg > 0.021 && this.dpr > 1) { this.dpr = Math.max(1, this.dpr - 0.25); this.renderer.setPixelRatio(this.dpr); this.resize(); }
-    else if (avg < 0.0135 && this.dpr < this.dprCap) { this.dpr = Math.min(this.dprCap, this.dpr + 0.25); this.renderer.setPixelRatio(this.dpr); this.resize(); }
+    if (avg > 0.021) {
+      // сначала разрешение, затем сглаживание, тени и в конце — постобработка
+      if (this.dpr > 1.25) { this.dpr = Math.max(1.25, this.dpr - 0.25); this.renderer.setPixelRatio(this.dpr); this.resize(); }
+      else if (this.post.samples > 2) { this.post.samples = 2; this.resize(); }
+      else if (this.arena.sun.shadow.mapSize.x > 1024) { this.arena.sun.shadow.mapSize.set(1024, 1024); if (this.arena.sun.shadow.map) { this.arena.sun.shadow.map.dispose(); this.arena.sun.shadow.map = null; } }
+      else if (this.dpr > 1) { this.dpr = 1; this.renderer.setPixelRatio(1); this.resize(); }
+      else if (this.post.enabled) { this.post.enabled = false; }
+    } else if (avg < 0.0125 && this.dpr < this.dprCap && this.post.enabled) { this.dpr = Math.min(this.dprCap, this.dpr + 0.25); this.renderer.setPixelRatio(this.dpr); this.resize(); }
   }
 
   persist() { writeSave(this.save); }
@@ -342,6 +360,22 @@ class Game {
     this.ui.menu();
   }
 
+  // Параметры постобработки от состояния боя.
+  updatePostParams(rdt) {
+    const P = this.post.params, B = this.battle;
+    let ab = 0, desat = 0;
+    if (B && !this.paused) {
+      const pl = B.player;
+      ab = Math.min(0.03, B.trauma * 0.02) + (B.runeMode ? 0.006 : 0);
+      const hpK = pl.hp / pl.maxHp;
+      desat = pl.dead ? 0.75 : Math.max(0, 0.3 - hpK) * 1.6;
+      P.tint.setRGB(1, 1, 1);
+      if (B.runeMode) P.tint.setRGB(0.72, 0.85, 1.25);
+    } else P.tint.setRGB(1, 1, 1);
+    P.aberration += (ab - P.aberration) * Math.min(1, rdt * 12);
+    P.desat += (desat - P.desat) * Math.min(1, rdt * 5);
+  }
+
   // ===== Цикл =====
   loop(now) {
     requestAnimationFrame((t) => this.loop(t));
@@ -368,10 +402,13 @@ class Game {
       this.updateMenuScene(rdt);
       this.fx.update(rdt);
     }
-    this.arena.update(this.time, rdt);
+    this.arena.update(this.time, rdt, this.fx);
+    this.arena.followShadow(this.battle ? this.battle.player.pos : this.camera.position);
     if (this.battle && !this.paused) this.ui.updateFloats(rdt);
     if (!render) return;
-    this.renderer.render(this.scene, this.camera);
+    this.renderer.info.reset();
+    this.updatePostParams(rdt);
+    this.post.render(this.scene, this.camera, this.time);
     this.ui.render2d(this.camera);
   }
 }

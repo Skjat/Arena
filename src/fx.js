@@ -42,8 +42,8 @@ function softDotTexture() {
 class BloodDrops {
   constructor(scene, decals, cap = 900) {
     this.cap = cap;
-    const geo = new THREE.IcosahedronGeometry(0.014, 0);
-    const mat = new THREE.MeshStandardMaterial({ color: 0x6a0000, roughness: 0.2, metalness: 0.1, emissive: 0x1a0000 });
+    const geo = new THREE.IcosahedronGeometry(0.014, 1);
+    const mat = new THREE.MeshStandardMaterial({ color: 0x700000, roughness: 0.12, metalness: 0.0, emissive: 0x160000 });
     this.mesh = new THREE.InstancedMesh(geo, mat, cap);
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.mesh.frustumCulled = false;
@@ -275,8 +275,20 @@ class Particles {
 class Chunks {
   constructor(scene, cap = 220) {
     this.cap = cap;
-    const geo = new THREE.BoxGeometry(1, 1, 1);
-    const mat = new THREE.MeshStandardMaterial({ roughness: 0.4, metalness: 0.05 });
+    // неровный комок вместо кубика
+    const geo = new THREE.IcosahedronGeometry(0.62, 1);
+    {
+      const p = geo.attributes.position;
+      const seen = new Map();
+      for (let i = 0; i < p.count; i++) {
+        const key = `${p.getX(i).toFixed(3)},${p.getY(i).toFixed(3)},${p.getZ(i).toFixed(3)}`;
+        if (!seen.has(key)) seen.set(key, 0.72 + Math.random() * 0.5);
+        const k = seen.get(key);
+        p.setXYZ(i, p.getX(i) * k, p.getY(i) * k, p.getZ(i) * k);
+      }
+      geo.computeVertexNormals();
+    }
+    const mat = new THREE.MeshStandardMaterial({ roughness: 0.3, metalness: 0.0 });
     this.mesh = new THREE.InstancedMesh(geo, mat, cap);
     this.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     this.mesh.instanceColor = new THREE.InstancedBufferAttribute(new Float32Array(cap * 3), 3);
@@ -438,8 +450,9 @@ export class FX {
   sparks(pos, dir, count = 16, color = [1, 0.75, 0.35]) {
     for (let i = 0; i < count; i++) {
       const v = new THREE.Vector3(dir.x + (Math.random() - 0.5) * 1.6, dir.y + Math.random() * 1.2, dir.z + (Math.random() - 0.5) * 1.6).normalize().multiplyScalar(3 + Math.random() * 7);
-      this.add.add({ pos, vel: v, color, color2: [1, 0.3, 0.05], size: 0.04 + Math.random() * 0.04, life: 0.25 + Math.random() * 0.3, grav: 9, drag: 1 });
+      this.add.add({ pos, vel: v, color: [color[0] * 2.2, color[1] * 2.2, color[2] * 2.2], color2: [1.6, 0.4, 0.05], size: 0.014 + Math.random() * 0.016, life: 0.3 + Math.random() * 0.4, grav: 9, drag: 1 });
     }
+    this.add.add({ pos, vel: _v.set(0, 0, 0), color: [2.5, 1.9, 1.0], size: 0.22, life: 0.09 });
     this.flashLight(pos, 0xffc070, 3, 0.12);
   }
 
@@ -448,7 +461,7 @@ export class FX {
       this.add.add({
         pos: _v.set(pos.x + (Math.random() - 0.5) * 0.2 * scale, pos.y + (Math.random() - 0.5) * 0.2 * scale, pos.z + (Math.random() - 0.5) * 0.2 * scale),
         vel: new THREE.Vector3((Math.random() - 0.5) * 0.5, 1 + Math.random() * 1.5, (Math.random() - 0.5) * 0.5),
-        color: [1, 0.65, 0.2], color2: [0.8, 0.1, 0.0], size: (0.18 + Math.random() * 0.18) * scale, life: 0.35 + Math.random() * 0.3, grow: -0.6, drag: 1
+        color: [1.5, 0.75, 0.2], color2: [0.7, 0.08, 0.0], size: (0.13 + Math.random() * 0.14) * scale, life: 0.35 + Math.random() * 0.3, grow: -0.6, drag: 1, alpha: 0.75
       });
     }
     if (Math.random() < 0.3) this.norm.add({ pos, vel: new THREE.Vector3(0, 1.2, 0), color: [0.08, 0.06, 0.05], size: 0.3 * scale, life: 1, grow: 2, alpha: 0.5 });
@@ -457,7 +470,7 @@ export class FX {
   explosion(pos, radius = 2.5, color = [1, 0.55, 0.15]) {
     for (let i = 0; i < 70; i++) {
       const d = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.2, Math.random() - 0.5).normalize();
-      this.add.add({ pos, vel: d.multiplyScalar(2 + Math.random() * radius * 3), color, color2: [0.6, 0.05, 0], size: 0.35 + Math.random() * 0.5, life: 0.4 + Math.random() * 0.5, drag: 3, grow: 1 });
+      this.add.add({ pos, vel: d.multiplyScalar(2 + Math.random() * radius * 3), color: [color[0] * 1.5, color[1] * 1.5, color[2] * 1.5], color2: [0.6, 0.05, 0], size: 0.3 + Math.random() * 0.4, life: 0.4 + Math.random() * 0.5, drag: 3, grow: 1, alpha: 0.7 });
     }
     for (let i = 0; i < 24; i++) {
       const d = new THREE.Vector3(Math.random() - 0.5, Math.random() * 0.7, Math.random() - 0.5).normalize();
@@ -465,7 +478,7 @@ export class FX {
     }
     for (let i = 0; i < 30; i++) {
       const d = new THREE.Vector3(Math.random() - 0.5, Math.random(), Math.random() - 0.5).normalize();
-      this.add.add({ pos, vel: d.multiplyScalar(6 + Math.random() * 8), color: [1, 0.8, 0.4], size: 0.05, life: 0.6 + Math.random() * 0.6, grav: 9 });
+      this.add.add({ pos, vel: d.multiplyScalar(6 + Math.random() * 8), color: [2.2, 1.5, 0.6], size: 0.028, life: 0.6 + Math.random() * 0.6, grav: 9 });
     }
     this.flashLight(pos, 0xff8833, 25, 0.5, radius * 4);
     // выжженное пятно
@@ -476,9 +489,21 @@ export class FX {
     const c = new THREE.Color(colorHex);
     for (let i = 0; i < count; i++) {
       const d = new THREE.Vector3(Math.random() - 0.5, Math.random() - 0.5, Math.random() - 0.5).normalize();
-      this.add.add({ pos, vel: d.multiplyScalar(speed * (0.3 + Math.random())), color: [c.r, c.g, c.b], color2: [c.r * 0.3, c.g * 0.3, c.b * 0.5], size: 0.1 + Math.random() * 0.15, life: 0.4 + Math.random() * 0.4, drag: 2 });
+      this.add.add({ pos, vel: d.multiplyScalar(speed * (0.3 + Math.random())), color: [c.r * 1.6, c.g * 1.6, c.b * 1.6], color2: [c.r * 0.3, c.g * 0.3, c.b * 0.5], size: 0.05 + Math.random() * 0.09, life: 0.4 + Math.random() * 0.4, drag: 2 });
     }
     this.flashLight(pos, colorHex, 6, 0.25);
+  }
+
+  // пламя факела/жаровни (вызывается каждый кадр)
+  torch(pos, dt, scale = 1) {
+    if (Math.random() < dt * 34) {
+      this.add.add({
+        pos: _v.set(pos.x + (Math.random() - 0.5) * 0.06 * scale, pos.y, pos.z + (Math.random() - 0.5) * 0.06 * scale),
+        vel: new THREE.Vector3((Math.random() - 0.5) * 0.25, 0.9 + Math.random() * 0.8, (Math.random() - 0.5) * 0.25),
+        color: [1.9, 0.95, 0.25], color2: [0.9, 0.12, 0.0], size: (0.16 + Math.random() * 0.1) * scale, life: 0.3 + Math.random() * 0.25, grow: -0.7, alpha: 0.8
+      });
+    }
+    if (Math.random() < dt * 3) this.add.add({ pos, vel: new THREE.Vector3((Math.random() - 0.5) * 0.6, 1.5 + Math.random(), (Math.random() - 0.5) * 0.6), color: [2.2, 1.2, 0.3], size: 0.02, life: 0.7 + Math.random() * 0.6, grav: -0.5 });
   }
 
   dust(pos, count = 8) {

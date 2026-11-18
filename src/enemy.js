@@ -6,6 +6,7 @@ import { ARENA_R } from './arena.js';
 import { SPELL_GLYPH, GLYPH_SHAPES } from './gesture.js';
 
 const _v = new THREE.Vector3(), _v2 = new THREE.Vector3();
+const _glowCol = new THREE.Color(0xff3010);
 const V = (x, y, z) => new THREE.Vector3(x, y, z);
 
 const ATTACKS = {
@@ -539,10 +540,13 @@ export class Enemy {
     // свечение оружия при замахе (телеграф)
     const m = ch.weapon && ch.weapon.mats;
     if (m) {
-      m.blade.emissive.copy(m.baseEmissive).lerp(new THREE.Color(0xff3010), glow * 0.9);
-      m.blade.emissiveIntensity = Math.max(m.glowIntensity, glow * 0.9);
+      m.blade.emissive.copy(m.baseEmissive).lerp(_glowCol, glow * 0.9);
+      m.blade.emissiveIntensity = Math.max(m.glowIntensity, glow * 2.2);
     }
     ch.castGlow = st === 'cast' ? 1 : 0;
+    // мимика: крик на ударе, оскал при касте, боль при оглушении
+    const at = this.attack;
+    ch.face.mouthT = st === 'attack' && at && at.phase === 'strike' ? 1 : st === 'attack' && at && at.phase === 'windup' ? 0.35 : st === 'stagger' ? 0.8 : st === 'cast' ? 0.45 : st === 'taunt' ? 0.9 : (this.time - this.lastHitT < 0.3 ? 0.7 : 0);
   }
 
   // ===== Атака =====

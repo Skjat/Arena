@@ -95,6 +95,14 @@ export class Battle {
     const toward = this.format === 'ffa' ? V(0, 0, 0) : hostCenter;
     this.player.yaw = Math.atan2(-(toward.x - lay.player.x), -(toward.z - lay.player.z));
     this.player.pitch = -0.06;
+    // в лабиринте — сразу смотреть вдоль прохода к ближайшему врагу, а не в стену
+    if (this.hazards.walls.length) {
+      const foes = this.hostilesOf(this.player).sort((a, b) => a.pos.distanceTo(lay.player) - b.pos.distanceTo(lay.player));
+      if (foes.length && this.hazards.losBlocked(lay.player, foes[0].pos)) {
+        const d = this.hazards.navLookAhead(lay.player, foes[0].pos, foes[0], 6);
+        if (d) this.player.yaw = Math.atan2(-d.x, -d.z);
+      }
+    }
     this.feed = [];
     this.spells = new Spells(this);
     this.countdown = 2.4;
@@ -460,6 +468,7 @@ export class Battle {
       if (backstab) this.ui.floatText(point.clone().add(V(0, 0.3, 0)), 'УДАР В СПИНУ!', '#ff3344');
     }
     e.ch.flash = 0.6;
+    if (!wasFrozen) e.ch.bloodAmt = Math.min(1, e.ch.bloodAmt + 0.1 + dmg / e.maxHp * 0.7);
     if (wasFrozen) {
       fx.magicBurst(point, 0xc8f4ff, 20, 4);
       this.sound.ice();
@@ -588,6 +597,7 @@ export class Battle {
     e.hp -= dmg;
     e.lastHitT = e.time;
     if (!o.silent) {
+      if (o.kind === 'beast' || o.kind === 'spikes' || o.kind === 'impact') e.ch.bloodAmt = Math.min(1, e.ch.bloodAmt + 0.25);
       if (o.attacker && o.attacker.isPlayer) this.ui.damageNumber(o.point || e.chest(), dmg, false, o.kind);
       e.ch.flash = 0.5;
       if (o.kind !== 'frost' && o.kind !== 'lightning') this.fx.blood(o.point || e.chest(), o.dir || V(0, 1, 0), 0.7, 3);
@@ -653,6 +663,8 @@ export class Battle {
     e.rune.visible = false;
     e.ch.anim.jitter = 0;
     e.ch.frozen = false;
+    e.ch.face.closed = true; e.ch.face.mouthT = 0.55;
+    e.ch.bloodAmt = Math.min(1, e.ch.bloodAmt + 0.3);
     // кто убил: прямой убийца или тот, кто недавно толкнул в ловушку
     let killer = info.attacker || null;
     if (!killer && e.lastAttacker && e.time - e.lastAttackerT < 6) killer = e.lastAttacker;

@@ -434,6 +434,7 @@ export class UI {
     this.floats = [];
     $('#hurt').style.opacity = 0;
     $('#frost-fx').style.opacity = 0;
+    $('#blood-screen').innerHTML = '';
   }
 
   battleEnd() {
