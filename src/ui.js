@@ -55,6 +55,17 @@ export class UI {
     this.screens.innerHTML = `<div class="screen scr-${name}">${html}</div>`;
     this.current = name;
     const root = this.screens.firstElementChild;
+    // вторая кнопка «Назад» в левом нижнем углу: верхний угол экрана на телефоне
+    // может перекрываться элементами браузера или оболочки
+    const tb = root.querySelector('.topbar [data-act="menu"], .topbar [data-act="back"]');
+    if (tb) {
+      const fab = document.createElement('button');
+      fab.className = 'btn back-fab';
+      fab.textContent = '←';
+      fab.setAttribute('aria-label', 'Назад');
+      for (const k of Object.keys(tb.dataset)) fab.dataset[k] = tb.dataset[k];
+      root.appendChild(fab);
+    }
     root.querySelectorAll('[data-act]').forEach((el) => {
       el.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -78,7 +89,8 @@ export class UI {
       case 'grimoire': this.grimoire(); break;
       case 'howto': this.howto(ds.back || 'menu'); break;
       case 'settings': this.settings(ds.back || 'menu'); break;
-      case 'practice': this.practice(); break;
+      case 'practice': this.practice(ds.back || 'grimoire'); break;
+      case 'quit': G.quitBattle(); break;
       case 'resume': G.resume(); break;
       case 'forfeit': G.forfeit(); break;
       case 'buy': G.buy(ds.kind, ds.id); break;
@@ -115,7 +127,7 @@ export class UI {
         </div>
         <div class="row">
           <button class="btn small" data-act="howto">Как играть</button>
-          <button class="btn small" data-act="practice">Тренировка рун</button>
+          <button class="btn small" data-act="practice" data-back="menu">Тренировка рун</button>
           <button class="btn small" data-act="settings">Настройки</button>
         </div>
         ${standalone ? '' : '<div class="ios-tip">Установка на iPhone: Safari → «Поделиться» → «На экран Домой». Игра работает офлайн и на весь экран.</div>'}
@@ -227,11 +239,11 @@ export class UI {
   }
 
   // ----- Тренировка рун -----
-  practice() {
+  practice(back = 'grimoire') {
     const s = this.game.save;
     const known = SPELL_ORDER.map((id) => `<div class="rune-item ${s.spells[id] ? '' : 'nomana'}">${glyphSVG(SPELL_GLYPH[id], hex(SPELLS[id].color), 26)}<span>${SPELLS[id].name}</span></div>`).join('');
     const root = this.screen(`
-      <div class="topbar"><button class="btn small" data-act="back" data-to="grimoire">← Гримуар</button><h2>Тренировка рун</h2><span></span></div>
+      <div class="topbar"><button class="btn small" data-act="back" data-to="${back}">← Назад</button><h2>Тренировка рун</h2><span></span></div>
       <div class="rune-list" style="margin-bottom:6px">${known}</div>
       <div class="practice"><canvas></canvas><div class="msg">Нарисуйте символ</div></div>
       <div class="note">Стрелу можно рисовать в любую сторону — так задаётся направление блинка.</div>`, 'practice');
@@ -372,7 +384,7 @@ export class UI {
       <button class="btn primary" data-act="resume">Продолжить</button>
       <button class="btn" data-act="howto" data-back="pause">Управление</button>
       <button class="btn" data-act="settings" data-back="pause">Настройки</button>
-      <button class="btn" data-act="forfeit">Сдаться</button></div>`, 'pause');
+      <div class="row"><button class="btn small" data-act="forfeit">Сдаться</button><button class="btn small" data-act="quit">Выйти в меню</button></div></div>`, 'pause');
   }
 
   settings(back = 'menu') {
@@ -385,11 +397,13 @@ export class UI {
         <div class="set-row"><span>Звук</span>${seg('sound', [[true, 'Вкл'], [false, 'Выкл']])}</div>
         <div class="set-row"><span>Вибрация</span>${seg('haptics', [[true, 'Вкл'], [false, 'Выкл']])}</div>
         <div class="set-row"><span>Удар</span>${seg('attackMode', [['swipe', 'Взмах пальцем'], ['button', 'Кнопка ⚔']])}</div>
+        <div class="set-row"><span>Взмах для удара</span>${seg('swipeSens', [[0.55, 'Лёгкий'], [0.8, 'Средний'], [1.15, 'Резкий']])}</div>
         <div class="set-row"><span>Чувствительность обзора</span>${seg('sens', [[0.6, 'Низкая'], [1, 'Средняя'], [1.5, 'Высокая'], [2.2, 'Макс.']])}</div>
         <div class="set-row"><span>Графика</span>${seg('quality', [['auto', 'Авто'], ['low', 'Низк.'], ['medium', 'Средн.'], ['high', 'Выс.']])}</div>
         <div class="set-row"><span>Кровь</span>${seg('blood', [[0, 'Мало'], [1, 'Средне'], [2, 'Реки']])}</div>
         <div class="set-row"><span>Левша (джойстик справа)</span>${seg('lefty', [[false, 'Нет'], [true, 'Да']])}</div>
         ${back === 'menu' ? '<div class="set-row"><span>Прогресс</span><button class="btn small" data-act="reset">Сбросить</button></div>' : ''}
+        <div class="note">«Взмах для удара»: если удары срабатывают, когда вы просто поворачиваете камеру, — выберите «Резкий»; если взмахи не превращаются в удары — «Лёгкий».</div>
         <div class="note">Вибрация на iPhone работает в iOS 18+. Если нет звука — проверьте беззвучный режим.</div>
       </div></div>`, 'settings');
   }

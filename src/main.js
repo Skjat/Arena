@@ -38,6 +38,7 @@ class Game {
     this.input = new Input(this);
     this.input.lefty = !!this.save.settings.lefty;
     this.input.attackMode = this.save.settings.attackMode || 'swipe';
+    this.input.swipeSens = this.save.settings.swipeSens || 0.8;
     this.ui = new UI(this);
     this.battle = null;
     this.paused = false;
@@ -214,6 +215,7 @@ class Game {
     this.camera.fov = 72; this.camera.updateProjectionMatrix(); this.resize();
     this.input.lefty = !!this.save.settings.lefty;
     this.input.attackMode = this.save.settings.attackMode || 'swipe';
+    this.input.swipeSens = this.save.settings.swipeSens || 0.8;
     this.battle = new Battle(this, this.save.fight, opts);
     this.input.setEnabled(true);
     this.paused = false;
@@ -233,6 +235,13 @@ class Game {
     this.ui.clear();
     this.input.setEnabled(true);
     this.last = performance.now();
+  }
+
+  // Выйти из боя в меню без результата.
+  quitBattle() {
+    this.paused = false;
+    this.input.setEnabled(false);
+    this.leaveBattle('menu');
   }
 
   forfeit() {
@@ -352,6 +361,7 @@ class Game {
     if (key === 'quality') this.applyQuality();
     if (key === 'lefty') { this.input.lefty = v; document.body.classList.toggle('lefty', v); }
     if (key === 'attackMode') { this.input.attackMode = v; document.body.classList.toggle('atk-btn', v === 'button'); }
+    if (key === 'swipeSens') this.input.swipeSens = v;
     this.persist();
     this.ui.settings(this.ui.settingsBack);
   }

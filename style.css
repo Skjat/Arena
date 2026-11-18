@@ -280,3 +280,9 @@ h2 { font-family: var(--title); color: var(--gold2); letter-spacing: 3px; margin
 body.atk-btn #btn-attack { display: flex; }
 .lefty #btn-attack { right: auto; left: calc(24px + var(--sl)); }
 #hud.rune #btn-attack { display: none !important; }
+
+/* ===== Кнопки «Назад»: крупнее сверху и дубль в левом нижнем углу ===== */
+.topbar .btn { min-height: 44px; padding: 10px 18px; font-size: 15px; }
+.back-fab { position: absolute; left: calc(12px + var(--sl)); bottom: calc(10px + var(--sb)); min-width: 0; width: 58px; height: 50px; padding: 0; margin: 0; font-size: 26px; line-height: 1; z-index: 3; background: linear-gradient(#4a2018, #24100c); border-color: rgba(227,184,92,0.6); }
+.screen .grid { padding-bottom: 70px; }
+.screen .settings, .screen .howto { padding-bottom: 66px; }

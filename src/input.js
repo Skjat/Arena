@@ -24,6 +24,7 @@ export class Input {
     this.enabled = false;
     this.lefty = false;
     this.attackMode = 'swipe'; // 'swipe' — удар взмахом, 'button' — кнопкой
+    this.swipeSens = 0.8;      // порог взмаха, px/мс (меньше — удар срабатывает легче)
     this.bind();
     this.resize();
   }
@@ -99,16 +100,53 @@ export class Input {
   gp() {
     const W = window.innerWidth, H = window.innerHeight;
     const k = Math.max(0.8, Math.min(1.8, Math.min(W, H) / 390));
-    return { W, H, slop: 8 * k, thr: 30 * k, vSwipe: 1.1 * k };
+    return { W, H, slop: 8 * k, thr: 24 * k, vSwipe: (this.swipeSens || 0.8) * k };
   }
 
-  // Скорость пальца (px/мс) за последние ms миллисекунд.
+  // Скорость пальца (px/мс) за последние ms миллисекунд АКТИВНОГО движения.
+  // Паузы без событий (палец коснулся и замер перед взмахом) не учитываются:
+  // иначе скорость взмаха «размазывается» по времени ожидания.
   speedOver(p, ms) {
-    const sm = p.samples, cur = sm[sm.length - 1];
-    let ref = sm[0];
-    for (let k = sm.length - 2; k >= 0; k--) { if (cur.t - sm[k].t >= ms) { ref = sm[k]; break; } }
-    const dt = Math.max(8, cur.t - ref.t);
-    return Math.hypot(cur.x - ref.x, cur.y - ref.y) / dt;
+    const sm = p.samples;
+    let dist = 0, time = 0;
+    for (let k = sm.length - 1; k > 0; k--) {
+      const a = sm[k - 1], b = sm[k];
+      dist += Math.hypot(b.x - a.x, b.y - a.y);
+      time += Math.min(24, Math.max(4, b.t - a.t));
+      if (time >= ms) break;
+    }
+    return time > 0 ? dist / time : 0;
+  }
+
+  // Решение по нераспознанному жесту: взмах (удар) или обзор.
+  // Вызывается на каждом движении и по таймеру (если палец остановился).
+  decide(p, now) {
+    if (p.mode !== 'pending' || !p.moveT) return;
+    const G = this.gp();
+    const x = p.lx, y = p.ly;
+    const d0 = Math.hypot(x - p.sx, y - p.sy);
+    const sinceMove = now - p.moveT;
+    const v = this.speedOver(p, 50);
+    const toLook = () => {
+      p.mode = 'look';
+      // накопленный поворот плавно отдаётся камере
+      this.lookBuf.x += p.lookAcc.x; this.lookBuf.y += p.lookAcc.y;
+      // короткое касание без паузы — чистый обзор; после удержания — блок с поворотом
+      if (p.heldBefore < 250) this.push({ type: 'release' });
+    };
+    if (this.attackMode === 'button') { toLook(); return; }
+    if (d0 >= G.thr && v >= G.vSwipe && sinceMove <= 160) {
+      // резкий взмах — удар вдоль движения пальца, камера не поворачивается
+      p.mode = 'swiped';
+      const dx = x - p.sx, dy = y - p.sy;
+      this.fireSwing({ x: p.sx, y: p.sy }, dx / d0, dy / d0, Math.min(1.5, v / (G.vSwipe * 2)));
+      p.swung = true;
+      p.lastDir = { x: dx / d0, y: dy / d0 };
+      p.ax = x; p.ay = y; p.lastT = now;
+      return;
+    }
+    // медленное движение — сразу обзор; среднее — ждём до 110 мс, не разгонится ли во взмах
+    if (sinceMove > 110 || (sinceMove > 40 && v < G.vSwipe * 0.5)) toLook();
   }
 
   addLook(p, dx, dy) {
@@ -238,36 +276,15 @@ export class Input {
       return;
     }
 
-    // --- ещё не решено: по умолчанию это обзор, удар — только резкий взмах с места
+    // --- ещё не решено: по умолчанию это обзор, удар — только резкий взмах
     if (p.mode === 'pending') {
       const d0 = Math.hypot(x - p.sx, y - p.sy);
-      if (d0 < G.slop) return;
+      if (d0 < G.slop && !p.moveT) return;
       if (!p.moveT) { p.moveT = now; p.heldBefore = now - p.t; }
       // пока жест не распознан, поворот копится в буфере (иначе камера дёргалась бы перед каждым ударом)
       p.lookAcc.x += x - p.lx; p.lookAcc.y += y - p.ly;
       p.lx = x; p.ly = y;
-      const sinceMove = now - p.moveT;
-      const swipeOk = this.attackMode !== 'button' && p.heldBefore < 220;
-      const v = this.speedOver(p, 60);
-      const toLook = () => {
-        p.mode = 'look';
-        // накопленный поворот плавно отдаётся камере
-        this.lookBuf.x += p.lookAcc.x; this.lookBuf.y += p.lookAcc.y;
-        // короткое касание без паузы — чистый обзор; после удержания — блок с поворотом
-        if (p.heldBefore < 250) this.push({ type: 'release' });
-      };
-      if (!swipeOk) { toLook(); return; }
-      if (d0 >= G.thr) {
-        if (sinceMove <= 170 && v >= G.vSwipe) {
-          // резкий взмах с места — удар вдоль движения пальца, камера не поворачивается
-          p.mode = 'swiped';
-          const dx = x - p.sx, dy = y - p.sy;
-          this.fireSwing({ x: p.sx, y: p.sy }, dx / d0, dy / d0, Math.min(1.5, v / (G.vSwipe * 2)));
-          p.swung = true;
-          p.lastDir = { x: dx / d0, y: dy / d0 };
-          p.ax = x; p.ay = y; p.lastT = now;
-        } else toLook();
-      } else if (sinceMove > 110 || (sinceMove > 45 && v < G.vSwipe * 0.5)) toLook();
+      this.decide(p, now);
       return;
     }
 
@@ -422,6 +439,9 @@ export class Input {
       const ty = (K.has('ArrowDown') || K.has('KeyK') ? 1 : 0) - (K.has('ArrowUp') || K.has('KeyI') ? 1 : 0);
       this.look.x += tx * 520 * rdt; this.look.y += ty * 300 * rdt;
     }
+    // палец начал движение и остановился — решить по таймеру
+    const tnow = performance.now();
+    for (const q of this.ptrs.values()) if (q.role === 'attack' && q.mode === 'pending' && q.moveT) this.decide(q, tnow);
     // отдать камере отложенный поворот (за ~3 кадра, без рывка)
     const lb = this.lookBuf;
     if (lb.x || lb.y) {
